@@ -22,6 +22,8 @@
 # region S0. Metadata / globals
 # =============================================================================
 
+# Metadata
+
 VERSION="1.0.0"
 AUTHOR="V Halcyon"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
@@ -29,38 +31,96 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
 RUN_ID="$(date -u +"%Y%m%d_%H%M%S_UTC")"
 
-# Script default settings
-
-APPLY=0
-FORCE=0
-VERBOSE=0
-SELF_TEST=0
-
-NEW=0
-ADD=0
-COLLECT=0
-VERIFY=0
-BUNDLE=0
-
-# Input tracking
-
-TITLE_SET=0
-DESCRIPTION_SET=0
-ASSET_SET=0
-SEVERITY_SET=0
-SITE_SET=0
-CASE_SET=0
-FILE_SET=0
-TYPE_SET=0
-PROFILE_SET=0
-OUTPUT_DIR_SET=0
-
-# Directory defaults
+# Global directory/case defaults
 
 VEC_ROOT="${VEC_ROOT:-${HOME}/Vec}"
 ENGINEERING_DIR="${ENGINEERING_DIR:-${VEC_ROOT}/Engineering}"
-OUTPUT_DIR="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
 CASE_PREFIX="GC"
+
+
+# Script input tracking
+declare -A WAS_SET=(
+	# Case description
+	[TITLE]=0
+	[DESCRIPTION]=0
+	[ASSET]=0
+	[SEVERITY]=0
+	[SITE]=0
+
+	# Ownership/timeline
+	[REPORTED_BY]=0
+	[OWNER]=0
+	[FIRST_OBSERVED]=0
+	[LAST_OBSERVED]=0
+
+	# Triage state
+	[OPERATIONAL_IMPACT]=0
+	[AFFECTED_SCOPE]=0
+	[RECENT_CHANGE]=0
+	[STATUS]=0
+	[REPRO_STATUS]=0
+	[CONTAINMENT_STATUS]=0
+	[TRIAGE_CONFIDENCE]=0
+
+	# Case/evidence selection
+	[PROFILE]=0
+	[CASE]=0
+	[FILE]=0
+	[TYPE]=0
+	[OUTPUT_DIR]=0
+)
+
+
+# Script OPTION values: defaults
+declare -A INPUT=(
+    # Case description
+    [TITLE]="new_case_set_title"
+    [DESCRIPTION]="No description provided"
+    [ASSET]="unknown_asset"
+    [SEVERITY]="P4"
+    [SITE]="unknown_site"
+
+    # Ownership / timeline
+    [REPORTED_BY]="Unknown"
+    [OWNER]="Unassigned"
+    [FIRST_OBSERVED]="Unknown"
+    [LAST_OBSERVED]="Unknown"
+
+    # Triage state
+    [OPERATIONAL_IMPACT]="Not yet assessed"
+    [AFFECTED_SCOPE]="Unknown"
+    [RECENT_CHANGE]="None identified"
+    [STATUS]="Open — pending initial triage"
+    [REPRO_STATUS]="Not attempted"
+    [CONTAINMENT_STATUS]="Not yet documented"
+    [TRIAGE_CONFIDENCE]="Low — initial information only"
+
+    # Case / evidence selection
+    [PROFILE]="default"
+    [CASE]=""
+    [FILE]=""
+    [TYPE]=""
+    [OUTPUT_DIR]="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
+)
+
+
+# Script behavior settings
+declare -A SCRIPT=(
+	[APPLY]=0
+	[FORCE]=0
+	[VERBOSE]=0
+	[SELF_TEST]=0
+)
+
+
+# Script COMMAND input
+declare -A COMMANDS=(
+	[NEW]=0
+	[ADD]=0
+	[COLLECT]=0
+	[VERIFY]=0
+	[BUNDLE]=0
+)
 
 # endregion
 
@@ -76,7 +136,7 @@ log()   { printf "%s[OK]%s %s\n" "$(_color '1;32')" "$(_reset)" "$*"; }
 info()  { printf "%s[INFO]%s %s\n" "$(_color '1;34')" "$(_reset)" "$*"; }
 warn()  { printf "%s[WARN]%s %s\n" "$(_color '1;33')" "$(_reset)" "$*" >&2; }
 err()   { printf "%s[ERR]%s %s\n" "$(_color '1;31')" "$(_reset)" "$*" >&2; }
-debug() { (( VERBOSE )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
+debug() { (( SCRIPT[VERBOSE] )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
 die() { err "$*"; exit 1; }
 timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
@@ -174,13 +234,13 @@ backup_if_exists() {
 write_file() {
     local path="$1"
     local content="$2"
-    if [[ -e "$path" && "$FORCE" -ne 1 ]]; then
+    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]]; then
         warn "File exists, skipping: $path  Use --force to replace after backup."
         return 0
     fi
     ensure_dir "$(dirname "$path")"
     [[ -e "$path" || -L "$path" ]] && backup_if_exists "$path"
-    if (( APPLY )); then
+    if (( SCRIPT[APPLY] )); then
         local tmp="${path}.tmp.$$"
         printf "%s" "$content" > "$tmp"
         mv "$tmp" "$path"
@@ -204,7 +264,7 @@ write_file_stream() {
 # =============================================================================
 
 run_cmd() {
-    if (( APPLY )); then
+    if (( SCRIPT[APPLY] )); then
         debug "RUN: $(printf '%q ' "$@")"
         "$@"
     else
@@ -261,11 +321,11 @@ make_run_manifest() {
 	script=$SCRIPT_NAME
 	script_path=$SCRIPT_PATH
 	script_dir=$SCRIPT_DIR
-	profile=$PROFILE
-	output_dir=$OUTPUT_DIR
-	apply=$APPLY
-	force=$FORCE
-	verbose=$VERBOSE
+	profile=${INPUT[PROFILE]}
+	output_dir=${INPUT[OUTPUT_DIR]}
+	apply=${SCRIPT[APPLY]}
+	force=${SCRIPT[FORCE]}
+	verbose=${SCRIPT[VERBOSE]}
 	RUN_MANIFEST
 }
 
@@ -274,13 +334,13 @@ make_case_manifest() {
     local path="$1"
 
     write_file_stream "$path" <<-CASE_MANIFEST
-	case_directory=$CASE
-	assets=$ASSET
-	severity=$SEVERITY
-	site=$SITE
-	files_added=$FILE
-	files_type=$TYPE
-	profile=$PROFILE
+	case_directory=${INPUT[CASE]}
+	assets=${INPUT[ASSET]}
+	severity=${INPUT[SEVERITY]}
+	site=${INPUT[SITE]}
+	files_added=${INPUT[FILE]}
+	files_type=${INPUT[TYPE]}
+	profile=${INPUT[PROFILE]}
 	CASE_MANIFEST
 }
 
@@ -338,25 +398,25 @@ initial_triage() {
     # -------------------------------------------------------------------------
 
 
-    case_id="${CASE:-Unknown Case-ID}"
-    title="${TITLE:-Untitled investigation}"
-    description="${DESCRIPTION:-No description provided}"
-    severity="${SEVERITY:-Unclassified}"
-    asset="${ASSET:-Asset Unknown}"
-    site="${SITE:-Unknown}"
-    case_status="${STATUS:-Open — pending initial triage}"
-    profile="${PROFILE:-default}"
+    case_id="${INPUT[CASE]:-Unknown Case-ID}"
+    title="${INPUT[TITLE]:-Untitled investigation}"
+    description="${INPUT[DESCRIPTION]:-No description provided}"
+    severity="${INPUT[SEVERITY]:-Unclassified}"
+    asset="${INPUT[ASSET]:-Asset Unknown}"
+    site="${INPUT[SITE]:-Unknown}"
+    case_status="${INPUT[STATUS]:-Open — pending initial triage}"
+    profile="${INPUT[PROFILE]:-default}"
 
-    reported_by="${REPORTED_BY:-Unknown}"
-    owner="${OWNER:-Unassigned}"
-    first_observed="${FIRST_OBSERVED_UTC:-Unknown}"
-    last_observed="${LAST_OBSERVED_UTC:-Unknown}"
-    operational_impact="${OPERATIONAL_IMPACT:-Not yet assessed}"
-    reproduction_status="${REPRO_STATUS:-Not attempted}"
-    containment_status="${CONTAINMENT_STATUS:-Not yet documented}"
-    affected_scope="${AFFECTED_SCOPE:-Unknown}"
-    recent_change="${RECENT_CHANGE:-None identified}"
-    confidence="${TRIAGE_CONFIDENCE:-Low — initial information only}"
+    reported_by="${INPUT[REPORTED_BY]:-Unknown}"
+    owner="${INPUT[OWNER]:-Unassigned}"
+    first_observed="${INPUT[FIRST_OBSERVED]:-Unknown}"
+    last_observed="${INPUT[LAST_OBSERVED]:-Unknown}"
+    operational_impact="${INPUT[OPERATIONAL_IMPACT]:-Not yet assessed}"
+    reproduction_status="${INPUT[REPRO_STATUS]:-Not attempted}"
+    containment_status="${INPUT[CONTAINMENT_STATUS]:-Not yet documented}"
+    affected_scope="${INPUT[AFFECTED_SCOPE]:-Unknown}"
+    recent_change="${INPUT[RECENT_CHANGE]:-None identified}"
+    confidence="${INPUT[TRIAGE_CONFIDENCE]:-Low — initial information only}"
     generated_utc="$(timestamp)"
 
 	# endregion
@@ -674,7 +734,7 @@ initial_triage() {
 	### What the receiving engineer needs
 
 	- **Decision or help requested:** TODO
-	- **Evidence location:** \`${OUTPUT_DIR}/${case_id}/evidence\`
+	- **Evidence location:** \`${INPUT[OUTPUT_DIR]}/${case_id}/evidence\`
 	- **Most relevant artifact:** TODO
 	- **Current leading hypothesis:** TODO
 	- **Most important unknown:** TODO
@@ -717,8 +777,8 @@ write_summary() {
 	status=$status
 	run_id=$RUN_ID
 	timestamp=$(timestamp)
-	output_dir=$OUTPUT_DIR
-	profile=$PROFILE
+	output_dir=${INPUT[OUTPUT_DIR]}
+	profile=${INPUT[PROFILE]}
 	SUMMARY
 }
 
@@ -767,7 +827,7 @@ NEW CASE
 
 Create a new case under:
 
-    ${OUTPUT_DIR}/{$CASE_PREFIX}_<timestamp>_<title>
+    ${INPUT[OUTPUT_DIR]}/{$CASE_PREFIX}_<timestamp>_<title>
 
 Required:
     --title STRING
@@ -978,7 +1038,7 @@ PATH AND OUTPUT OPTIONS
         Override the default case-storage directory.
 
         Default:
-            ${OUTPUT_DIR}
+            ${INPUT[OUTPUT_DIR]}
 
 
 ────────────────────────────────────────────────────────────────
@@ -1054,6 +1114,7 @@ set_cli_value() {
 
     [[ -n "$value" ]] || die "Missing value for ${option}"
 
+
     destination="$value"
     was_set=1
 }
@@ -1062,89 +1123,81 @@ parse_args() {
     while (($#)); do
         case "$1" in
 			# Case description
-			--title)               set_cli_value "$1" TITLE               TITLE_SET               "${2-}"; shift ;;
-			--description)         set_cli_value "$1" DESCRIPTION         DESCRIPTION_SET         "${2-}"; shift ;;
-			--asset)               set_cli_value "$1" ASSET               ASSET_SET               "${2-}"; shift ;;
-			--severity)            set_cli_value "$1" SEVERITY            SEVERITY_SET            "${2-}"; shift ;;
-			--site)                set_cli_value "$1" SITE                SITE_SET                "${2-}"; shift ;;
+			--title)                 set_cli_value "$1" "INPUT[TITLE]" "WAS_SET[TITLE]" "${2-}"; shift ;;
+			--description)           set_cli_value "$1" "INPUT[DESCRIPTION]" "WAS_SET[DESCRIPTION]" "${2-}"; shift ;;
+			--asset)                 set_cli_value "$1" "INPUT[ASSET]" "WAS_SET[ASSET]" "${2-}"; shift ;;
+			--severity)              set_cli_value "$1" "INPUT[SEVERITY]" "WAS_SET[SEVERITY]" "${2-}"; shift ;;
+			--site)                  set_cli_value "$1" "INPUT[SITE]" "WAS_SET[SITE]" "${2-}"; shift ;;
 
 			# Ownership and timeline
-			--reported-by)         set_cli_value "$1" REPORTED_BY         REPORTED_BY_SET         "${2-}"; shift ;;
-			--owner)               set_cli_value "$1" OWNER               OWNER_SET               "${2-}"; shift ;;
-			--first-observed)      set_cli_value "$1" FIRST_OBSERVED_UTC  FIRST_OBSERVED_SET      "${2-}"; shift ;;
-			--last-observed)       set_cli_value "$1" LAST_OBSERVED_UTC   LAST_OBSERVED_SET       "${2-}"; shift ;;
+			--reported-by)           set_cli_value "$1" "INPUT[REPORTED_BY]" "WAS_SET[REPORTED_BY]" "${2-}"; shift ;;
+			--owner)                 set_cli_value "$1" "INPUT[OWNER]" "WAS_SET[OWNER]" "${2-}"; shift ;;
+			--first-observed)        set_cli_value "$1" "INPUT[FIRST_OBSERVED]" "WAS_SET[FIRST_OBSERVED]" "${2-}"; shift ;;
+			--last-observed)         set_cli_value "$1" "INPUT[LAST_OBSERVED]" "WAS_SET[LAST_OBSERVED]" "${2-}"; shift ;;
 
 			# Triage state
-			--operational-impact)  set_cli_value "$1" OPERATIONAL_IMPACT  OPERATIONAL_IMPACT_SET  "${2-}"; shift ;;
-			--affected-scope)      set_cli_value "$1" AFFECTED_SCOPE      AFFECTED_SCOPE_SET      "${2-}"; shift ;;
-			--recent-change)       set_cli_value "$1" RECENT_CHANGE       RECENT_CHANGE_SET       "${2-}"; shift ;;
-			--status)              set_cli_value "$1" STATUS              STATUS_SET              "${2-}"; shift ;;
-			--repro-status)        set_cli_value "$1" REPRO_STATUS        REPRO_STATUS_SET        "${2-}"; shift ;;
-			--containment-status)  set_cli_value "$1" CONTAINMENT_STATUS  CONTAINMENT_STATUS_SET  "${2-}"; shift ;;
-			--triage-confidence)   set_cli_value "$1" TRIAGE_CONFIDENCE   TRIAGE_CONFIDENCE_SET   "${2-}"; shift ;;
+			--operational-impact)    set_cli_value "$1" "INPUT[OPERATIONAL_IMPACT]" "WAS_SET[OPERATIONAL_IMPACT]" "${2-}"; shift ;;
+			--affected-scope)        set_cli_value "$1" "INPUT[AFFECTED_SCOPE]" "WAS_SET[AFFECTED_SCOPE]" "${2-}"; shift ;;
+			--recent-change)         set_cli_value "$1" "INPUT[RECENT_CHANGE]" "WAS_SET[RECENT_CHANGE]" "${2-}"; shift ;;
+			--status)                set_cli_value "$1" "INPUT[STATUS]" "WAS_SET[STATUS]" "${2-}"; shift ;;
+			--repro-status)          set_cli_value "$1" "INPUT[REPRO_STATUS]" "WAS_SET[REPRO_STATUS]" "${2-}"; shift ;;
+			--containment-status)    set_cli_value "$1" "INPUT[CONTAINMENT_STATUS]" "WAS_SET[CONTAINMENT_STATUS]" "${2-}"; shift ;;
+			--triage-confidence)     set_cli_value "$1" "INPUT[TRIAGE_CONFIDENCE]" "WAS_SET[TRIAGE_CONFIDENCE]" "${2-}"; shift ;;
 
 			# Case and evidence selection
-			--profile)             set_cli_value "$1" PROFILE             PROFILE_SET             "${2-}"; shift ;;
-			--case)                set_cli_value "$1" CASE                CASE_SET                "${2-}"; shift ;;
-			--file)                set_cli_value "$1" FILE                FILE_SET                "${2-}"; shift ;;
-			--type)                set_cli_value "$1" TYPE                TYPE_SET                "${2-}"; shift ;;
-			--output-dir)          set_cli_value "$1" OUTPUT_DIR          OUTPUT_DIR_SET          "${2-}"; shift ;;
+			--profile)               set_cli_value "$1" "INPUT[PROFILE]" "WAS_SET[PROFILE]" "${2-}"; shift ;;
+			--case)                  set_cli_value "$1" "INPUT[CASE]" "WAS_SET[CASE]" "${2-}"; shift ;;
+			--file)                  set_cli_value "$1" "INPUT[FILE]" "WAS_SET[FILE]" "${2-}"; shift ;;
+			--type)                  set_cli_value "$1" "INPUT[TYPE]" "WAS_SET[TYPE]" "${2-}"; shift ;;
+			--output-dir)            set_cli_value "$1" "INPUT[OUTPUT_DIR]" "WAS_SET[OUTPUT_DIR]" "${2-}"; shift ;;
 
 			# Execution behavior
-			--apply)               APPLY=1 ;;
-			--dry-run|--no-load-run)
-								APPLY=0 ;;
-			--force)               FORCE=1 ;;
-			-v|--verbose)          VERBOSE=1 ;;
-			--self-test)           SELF_TEST=1 ;;
+			--apply)               SCRIPT[APPLY]=1 ;;
+			--no-load-run)		   SCRIPT[APPLY]=0 ;;
+			--force)               SCRIPT[FORCE]=1 ;;
+			-v|--verbose)          SCRIPT[VERBOSE]=1 ;;
+			--self-test)           SCRIPT[SELF_TEST]=1 ;;
 			--version)             printf '%s\n' "$VERSION"; exit 0 ;;
 			-h|--help)             usage; exit 0 ;;
 
 			# Commands
-			new)                   NEW=1;     debug "Option 'new' selected" ;;
-			add)                   ADD=1;     debug "Option 'add' selected" ;;
-			collect)               COLLECT=1; debug "Option 'collect' selected" ;;
-			verify)                VERIFY=1;  debug "Option 'verify' selected" ;;
-			bundle)                BUNDLE=1;  debug "Option 'bundle' selected" ;;
+			new)                   COMMANDS[NEW]=1;     debug "Option 'new' selected" ;;
+			add)                   COMMANDS[ADD]=1;     debug "Option 'add' selected" ;;
+			collect)               COMMANDS[COLLECT]=1; debug "Option 'collect' selected" ;;
+			verify)                COMMANDS[VERIFY]=1;  debug "Option 'verify' selected" ;;
+			bundle)                COMMANDS[BUNDLE]=1;  debug "Option 'bundle' selected" ;;
 
 			*)                     die "Unknown argument: $1" ;;
 		esac
         shift
     done
 
-
-
-    TITLE="${TITLE:-"New_Case"}"
-    DESCRIPTION="${DESCRIPTION:-"Please add description"}"
-    ASSET="${ASSET:-"A-000"}"
-    SEVERITY="${SEVERITY:-"P4"}"
-    SITE="${SITE:-"S-000"}"
-    CASE="${CASE:-GC_"${RUN_ID}"_"${TITLE}"}"
-    FILE="${FILE:-"new_file"_"${TITLE}"}"
-    TYPE="${TYPE:-"raw"}"
-    PROFILE="${PROFILE:-"default"}"
-    STATUS="${STATUS:-"grounded pending triage"}"
+	if (( WAS_SET[TITLE] && !WAS_SET[CASE] )); then
+		INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
+	elif (( !WAS_SET[TITLE] && WAS_SET[CASE] )); then
+		debug "Case-ID: ${INPUT[CASE]}"
+	elif (( WAS_SET[TITLE] && WAS_SET[CASE] )); then
+		debug "Please set either 'new --title' or 'add --case, not both"
+	fi
 }
 
 validate_config() {
 
 	debug "running validate_config..."
 
-	if (( NEW )); then
-		(( TITLE_SET )) || die "Input --title required"
-		(( DESCRIPTION_SET )) || die "Input --description required"
-		(( SEVERITY_SET )) || die "Input --severity required"
-		(( ASSET_SET )) || warn "Input --asset missing - using default"
+	if (( COMMANDS[NEW] )); then
+		(( WAS_SET[TITLE] )) || die "Input --title required"
+		(( WAS_SET[DESCRIPTION] )) || die "Input --description required"
+		(( WAS_SET[SEVERITY] )) || die "Input --severity required"
+		(( WAS_SET[ASSET] )) || warn "Input --asset missing - using default"
 	fi
 
-	if (( ADD )); then
-		(( CASE_SET )) || die "Input --case required"
-		[[ -e "$OUTPUT_DIR/$CASE" ]] || die "$OUTPUT_DIR/$CASE does not exist"
+	if (( COMMANDS[ADD] )); then
+		(( WAS_SET[CASE] )) || die "Input --case required"
+		[[ -e "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}" ]] || die "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]} does not exist"
 
 	fi
 
-[[ -n "$PROFILE" ]]
-	[[ -n "$STATUS" ]]
 
 
 }
@@ -1158,50 +1211,50 @@ validate_config() {
 run_workflow() {
     info "Starting workflow"
     info "Run ID: $RUN_ID"
-    ensure_dir "$OUTPUT_DIR/logs"
-    ensure_dir "$OUTPUT_DIR/artifacts"
+    ensure_dir "${INPUT[OUTPUT_DIR]}/logs"
+    ensure_dir "${INPUT[OUTPUT_DIR]}/artifacts"
 
-    make_run_manifest "$OUTPUT_DIR/logs/run_manifest_${RUN_ID}.txt"
+    make_run_manifest "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
 
-    if (( NEW )); then
-        ensure_dir "${OUTPUT_DIR}/${CASE}"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/manifest"
+    if (( COMMANDS[NEW] )); then
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest"
 
-        make_case_manifest "${OUTPUT_DIR}/${CASE}/manifest/case_manifest.txt"
-        environment_check "${OUTPUT_DIR}/${CASE}/manifest/environment.txt"
-		software_check "${OUTPUT_DIR}/${CASE}/manifest/software_versions.txt"
- 		verify_checksums  "${OUTPUT_DIR}/${CASE}/manifest/checksums.sha256"
+        make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+        environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
+		software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
+ 		verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
 
-        ensure_dir "${OUTPUT_DIR}/${CASE}/evidence"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/evidence/raw"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/evidence/photos"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/evidence/logs"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/evidence/operator_notes"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes"
 
-        ensure_dir "${OUTPUT_DIR}/${CASE}/derived"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/derived/timelines"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/derived/extracts"
-        ensure_dir "${OUTPUT_DIR}/${CASE}/derived/figures"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/timelines"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/extracts"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/figures"
 
-        ensure_dir "${OUTPUT_DIR}/${CASE}/commands"
-        write_file "${OUTPUT_DIR}/${CASE}/commands/collection.log" "test collection.log"
-        write_file "${OUTPUT_DIR}/${CASE}/commands/replay.sh" "test replay.sh"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/collection.log" "test collection.log"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/replay.sh" "test replay.sh"
 
-        ensure_dir "${OUTPUT_DIR}/${CASE}/reports"
-        initial_triage "${OUTPUT_DIR}/${CASE}/reports/initial_triage.md"
-        write_file "${OUTPUT_DIR}/${CASE}/reports/handoff.md" "test handoff.md"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports"
+        initial_triage "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/initial_triage.md"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/handoff.md" "test handoff.md"
     fi
 
-    if (( ADD )); then
+    if (( COMMANDS[ADD] )); then
 
-        assert_dir_exists "${OUTPUT_DIR}/${CASE}"
-		assert_file_exists "${OUTPUT_DIR}/${CASE}/manifest/case_manifest.txt"
+        assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
 
-		debug "Adding ${TYPE} file: ${FILE} to ${OUTPUT_DIR}/${CASE}"
+		debug "Adding ${INPUT[TYPE]} file: ${INPUT[FILE]} to ${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
 
-		if [[ -f "$FILE" && -e "$FILE" ]]; then
+		if [[ -f "${INPUT[FILE]}" && -e "${INPUT[FILE]}" ]]; then
 
-			case "${TYPE}" in
+			case "${INPUT[TYPE]}" in
 				raw) ;;
 				photo)  ;;
 				log)  ;;
@@ -1213,19 +1266,19 @@ run_workflow() {
 
     fi
 
-    if (( COLLECT )); then
-        debug "Collect = $COLLECT"
+    if (( COMMANDS[COLLECT] )); then
+        debug "Collect = ${COMMANDS[COLLECT]}"
     fi
 
-    if (( VERIFY )); then
-        debug "Verify = $VERIFY"
+    if (( COMMANDS[VERIFY] )); then
+        debug "Verify = ${COMMANDS[VERIFY]}"
     fi
 
-    if (( BUNDLE )); then
-        debug "$BUNDLE"
+    if (( COMMANDS[BUNDLE] )); then
+        debug "${COMMANDS[BUNDLE]}"
     fi
 
-    write_summary "$OUTPUT_DIR/logs/summary_${RUN_ID}.txt" "ok"
+    write_summary "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt" "ok"
     log "ghostcase workflow complete"
 }
 
@@ -1233,29 +1286,29 @@ run_self_test() {
     local tmp_dir old_apply old_output
     tmp_dir="$(mktemp -d)"
     info "Self-test temp dir: $tmp_dir"
-    old_apply="$APPLY"
-    old_output="$OUTPUT_DIR"
-    APPLY=1
-    OUTPUT_DIR="$tmp_dir/output"
-    PROFILE="${PROFILE:-default}"
+    old_apply="${SCRIPT[APPLY]}"
+    old_output="${INPUT[OUTPUT_DIR]}"
+    SCRIPT[APPLY]=1
+    INPUT[OUTPUT_DIR]="$tmp_dir/output"
+    INPUT[PROFILE]="${INPUT[PROFILE]:-default}"
 
-	info "Output Directory: $OUTPUT_DIR"
-    info "Input Path: $PROFILE"
+	info "Output Directory: ${INPUT[OUTPUT_DIR]}"
+    info "Input Path: ${INPUT[PROFILE]}"
 
 	validate_config
     run_workflow
-    assert_file_exists "$OUTPUT_DIR/logs/run_manifest_${RUN_ID}.txt"
-    assert_file_exists "$OUTPUT_DIR/logs/summary_${RUN_ID}.txt"
+    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
 
-	if (( VERBOSE )); then
+	if (( SCRIPT[VERBOSE] )); then
         debug "First 5 lines run_manifest:";
-        head -n 5 "$OUTPUT_DIR/logs/run_manifest_${RUN_ID}.txt"
+        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
         debug "First 5 lines summary:"
-        head -n 5 "$OUTPUT_DIR/logs/summary_${RUN_ID}.txt"
+        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
     fi
 
-	APPLY="$old_apply"
-    OUTPUT_DIR="$old_output"
+	SCRIPT[APPLY]="$old_apply"
+    INPUT[OUTPUT_DIR]="$old_output"
 
     #rm -rf "$tmp_dir"
     log "Self-test passed"
@@ -1273,7 +1326,7 @@ main() {
 
     parse_args "$@"
 
-    if (( SELF_TEST )); then
+    if (( SCRIPT[SELF_TEST] )); then
         run_self_test
     else
         validate_config
