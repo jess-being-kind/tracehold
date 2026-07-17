@@ -1,4 +1,4 @@
-# ghostcase
+# tracehold
 > Turn ambiguous field failures into structured, timestamped, evidence-conscious engineering case files.
 
 `ghostcase` is a Bash-based incident capture and triage tool for engineering problems where hardware, software, communications, configuration, environment, operator procedure, and telemetry may all be interacting.
