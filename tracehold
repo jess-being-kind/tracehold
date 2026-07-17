@@ -80,7 +80,6 @@ declare -a ASSETS=()
 declare -a SITES=()
 declare -a OWNERS=()
 declare -a RECENT_CHANGES=()
-declare -a FILES=()
 
 # --- Input defaults ----------------------------------------------------------
 
@@ -88,16 +87,20 @@ declare -A INPUT=(
     # Case description
     [TITLE]="new_case_set_title"
     [DESCRIPTION]="No description provided"
+	[ASSET]=""
     [SEVERITY]="P4"
+	[SITE]=""
 
     # Ownership and timeline
     [REPORTED_BY]="Unknown"
-    [FIRST_OBSERVED]="Unknown"
+	[OWNER]=""
+	[FIRST_OBSERVED]="Unknown"
     [LAST_OBSERVED]="Unknown"
 
     # Triage state
     [OPERATIONAL_IMPACT]="Not yet assessed"
     [AFFECTED_SCOPE]="Unknown"
+	[RECENT_CHANGE]=""
     [STATUS]="Open — pending initial triage"
     [REPRO_STATUS]="Not attempted"
     [CONTAINMENT_STATUS]="Not yet documented"
@@ -106,6 +109,7 @@ declare -A INPUT=(
     # Case and evidence selection
     [PROFILE]="default"
     [CASE]=""
+	[FILE]=""
     [TYPE]=""
     [OUTPUT_DIR]="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
 )
@@ -148,7 +152,7 @@ info()  { printf "%s[INFO]%s %s\n" "$(_color '1;34')" "$(_reset)" "$*"; }
 warn()  { printf "%s[WARN]%s %s\n" "$(_color '1;33')" "$(_reset)" "$*" >&2; }
 err()   { printf "%s[ERR]%s %s\n" "$(_color '1;31')" "$(_reset)" "$*" >&2; }
 debug() { (( SCRIPT[VERBOSE] )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
-die() { err "$*"; exit 1; }
+die() { err "$*"; exit "${2:-1}" ; }
 timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
 # --- Runtime error handling --------------------------------------------------
@@ -368,7 +372,7 @@ make_case_manifest() {
 	case_directory=${INPUT[CASE]}
 	assets=${INPUT[ASSET]}
 	severity=${INPUT[SEVERITY]}
-	site=${INPUT[SITE]}
+	site=${INPUT[SITE]:-""}
 	files_added=${INPUT[FILE]}
 	files_type=${INPUT[TYPE]}
 	profile=${INPUT[PROFILE]}
@@ -428,6 +432,8 @@ verify_checksums() {
 # region S6a. Report generation
 # =============================================================================
 
+# --- Write initial triage report ---------------------------------------------
+
 initial_triage() {
     info "Building initial_triage report"
     local path="${1:?initial_triage requires an output path}"
@@ -462,7 +468,7 @@ initial_triage() {
     # -------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
-    # region T2. Log resolved values
+    # region T2. Log/debug resolved values
     # -------------------------------------------------------------------------
 
     debug "Case-ID: $case_id"
@@ -1413,7 +1419,7 @@ validate_config() {
     (( command_count == 1 )) || die "Select exactly one command: new, add, collect, verify, or bundle"
 
     if (( COMMANDS[NEW] )); then
-        (( WAS_SET[CASE] == 0 )) || die "--case cannot be used with the new command"
+        (( WAS_SET[CASE] == 0 )) || die "--case cannot be used with the 'new' command"
         (( WAS_SET[TITLE] )) || die "Input --title required"
         (( WAS_SET[DESCRIPTION] )) || die "Input --description required"
         (( WAS_SET[SEVERITY] )) || die "Input --severity required"
@@ -1548,29 +1554,43 @@ run_self_test() {
     info "Self-test temp dir: $tmp_dir"
     old_apply="${SCRIPT[APPLY]}"
     old_output="${INPUT[OUTPUT_DIR]}"
-    SCRIPT[APPLY]=1
+
+	SCRIPT[APPLY]=1
     INPUT[OUTPUT_DIR]="$tmp_dir/output"
     INPUT[PROFILE]="${INPUT[PROFILE]:-default}"
 
     info "Output Directory: ${INPUT[OUTPUT_DIR]}"
     info "Input Path: ${INPUT[PROFILE]}"
 
+	for set in "${!WAS_SET[@]}"; do
+		debug "WAS_SET: $set - ${WAS_SET[$set]}"
+	done
+
+	for option in "${!INPUT[@]}"; do
+		debug "INPUT: $option- ${INPUT[$option]}"
+	done
+
+	for setting in "${!SCRIPT[@]}"; do
+		debug "SCRIPT: $setting - ${SCRIPT[$setting]}"
+	done
+
+	for command in "${!COMMANDS[@]}"; do
+		debug "COMMANDS: $command - ${COMMANDS[$command]}"
+	done
+
     validate_config
     run_workflow
     assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
     assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
 
-    if (( SCRIPT[VERBOSE] )); then
-        debug "First 5 lines run_manifest:";
-        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
-        debug "First 5 lines summary:"
-        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
-    fi
+    debug "First 5 lines run_manifest:" && head -n 5 "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+    debug "First 5 lines summary:" && head -n 5 "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
 
     SCRIPT[APPLY]="$old_apply"
     INPUT[OUTPUT_DIR]="$old_output"
 
-    # rm -rf "$tmp_dir"
+    ls -lrth "$tmp_dir"
+	rm -rf "$tmp_dir"
     log "Self-test passed"
 }
 
