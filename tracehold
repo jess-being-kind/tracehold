@@ -1,0 +1,1605 @@
+#!/usr/bin/env bash
+# =============================================================================
+# region Script overview
+# =============================================================================
+# tracehold
+#
+# A Bash tool that turns an ambiguous field problem into a complete,
+# timestamped, integrity-checked case file.
+#
+# Pattern:
+#   parse_args ->   self-test       -> run_workflow
+#                   validate_config -> run_workflow
+#
+# Ensures:
+# - the right evidence was captured before it disappeared;
+# - timestamps and configuration are preserved;
+# - everyone is discussing the same vehicle, software version, site, and event;
+# - logs can be handed to another engineer without a 30-minute explanation;
+# - the original evidence remains distinguishable from processed output;
+# - the eventual fix can be connected back to the original symptom.
+# =============================================================================
+# endregion Script overview
+# =============================================================================
+
+# =============================================================================
+# region S0. Metadata and globals
+# =============================================================================
+
+# --- Metadata ----------------------------------------------------------------
+
+VERSION="1.0.0"
+AUTHOR="V Halcyon"
+SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
+RUN_ID="$(date -u +"%Y%m%d_%H%M%S_UTC")"
+
+# --- Directory and case defaults ---------------------------------------------
+
+VEC_ROOT="${VEC_ROOT:-${HOME}/Vec}"
+ENGINEERING_DIR="${ENGINEERING_DIR:-${VEC_ROOT}/Engineering}"
+CASE_PREFIX="GC"
+
+# --- Input tracking ----------------------------------------------------------
+
+declare -A WAS_SET=(
+    # Case description
+    [TITLE]=0
+    [DESCRIPTION]=0
+    [ASSET]=0
+    [SEVERITY]=0
+    [SITE]=0
+
+    # Ownership and timeline
+    [REPORTED_BY]=0
+    [OWNER]=0
+    [FIRST_OBSERVED]=0
+    [LAST_OBSERVED]=0
+
+    # Triage state
+    [OPERATIONAL_IMPACT]=0
+    [AFFECTED_SCOPE]=0
+    [RECENT_CHANGE]=0
+    [STATUS]=0
+    [REPRO_STATUS]=0
+    [CONTAINMENT_STATUS]=0
+    [TRIAGE_CONFIDENCE]=0
+
+    # Case and evidence selection
+    [PROFILE]=0
+    [CASE]=0
+    [FILE]=0
+    [TYPE]=0
+    [OUTPUT_DIR]=0
+)
+
+# --- Variadic inputs ---------------------------------------------------------
+
+declare -a ASSETS=()
+declare -a SITES=()
+declare -a OWNERS=()
+declare -a RECENT_CHANGES=()
+declare -a FILES=()
+
+# --- Input defaults ----------------------------------------------------------
+
+declare -A INPUT=(
+    # Case description
+    [TITLE]="new_case_set_title"
+    [DESCRIPTION]="No description provided"
+    [SEVERITY]="P4"
+
+    # Ownership and timeline
+    [REPORTED_BY]="Unknown"
+    [FIRST_OBSERVED]="Unknown"
+    [LAST_OBSERVED]="Unknown"
+
+    # Triage state
+    [OPERATIONAL_IMPACT]="Not yet assessed"
+    [AFFECTED_SCOPE]="Unknown"
+    [STATUS]="Open — pending initial triage"
+    [REPRO_STATUS]="Not attempted"
+    [CONTAINMENT_STATUS]="Not yet documented"
+    [TRIAGE_CONFIDENCE]="Low — initial information only"
+
+    # Case and evidence selection
+    [PROFILE]="default"
+    [CASE]=""
+    [TYPE]=""
+    [OUTPUT_DIR]="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
+)
+
+# --- Execution settings ------------------------------------------------------
+
+declare -A SCRIPT=(
+    [APPLY]=0
+    [FORCE]=0
+    [VERBOSE]=0
+    [SELF_TEST]=0
+)
+
+# --- Command selection -------------------------------------------------------
+
+declare -A COMMANDS=(
+    [NEW]=0
+    [ADD]=0
+    [COLLECT]=0
+    [VERIFY]=0
+    [BUNDLE]=0
+)
+
+# =============================================================================
+# endregion S0. Metadata and globals
+# =============================================================================
+
+# =============================================================================
+# region S1. Logging and errors
+# =============================================================================
+
+# --- Logging -----------------------------------------------------------------
+
+supports_color() { [[ -t 1 && "${NO_COLOR:-}" == "" ]]; }
+_color() { supports_color && printf '\033[%sm' "$1" || true; }
+_reset() { supports_color && printf '\033[0m' || true; }
+
+log()   { printf "%s[OK]%s %s\n" "$(_color '1;32')" "$(_reset)" "$*"; }
+info()  { printf "%s[INFO]%s %s\n" "$(_color '1;34')" "$(_reset)" "$*"; }
+warn()  { printf "%s[WARN]%s %s\n" "$(_color '1;33')" "$(_reset)" "$*" >&2; }
+err()   { printf "%s[ERR]%s %s\n" "$(_color '1;31')" "$(_reset)" "$*" >&2; }
+debug() { (( SCRIPT[VERBOSE] )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
+die() { err "$*"; exit 1; }
+timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+# --- Runtime error handling --------------------------------------------------
+
+ROOT_BASHPID=""
+ERROR_REPORTED=0
+CLEANUP_RAN=0
+
+install_runtime() {
+    set -Eeuo pipefail
+    IFS=$'\n\t'
+
+    ROOT_BASHPID="$BASHPID"
+
+    trap 'on_error "$?" "$LINENO" "$BASH_COMMAND"' ERR
+    trap 'cleanup "$?"' EXIT
+}
+
+on_error() {
+    local status="$1"
+    local line="$2"
+    local command="$3"
+
+    # Ignore duplicate reports from command-substitution and pipeline subshells.
+    [[ "$BASHPID" == "$ROOT_BASHPID" ]] || return 0
+
+    # Ignore additional ERR events after the first root-shell report.
+    if (( ERROR_REPORTED )); then
+        return 0
+    fi
+    ERROR_REPORTED=1
+
+    printf 'OOPS: command failed\n' >&2
+    printf '    exit code: %d\n' "$status" >&2
+    printf '    line: %d\n' "$line" >&2
+    printf '    command: %s\n' "$command" >&2
+    printf '    process: %s\n' "$BASHPID" >&2
+    printf '    function: %s\n' "${FUNCNAME[1]:-main}" >&2
+}
+
+cleanup() {
+    local status="$1"
+
+    # Only clean up from the shell that actually started main.
+    [[ "$BASHPID" == "$ROOT_BASHPID" ]] || return 0
+
+    if (( CLEANUP_RAN )); then
+        return 0
+    fi
+    CLEANUP_RAN=1
+
+    # Prevent accidental re-entry while cleanup itself executes.
+    trap - EXIT
+
+    if (( status == 0 )); then
+        debug "Cleanup complete."
+    else
+        warn "Script exited with status ${status}."
+    fi
+}
+
+# =============================================================================
+# endregion S1. Logging and errors
+# =============================================================================
+
+# =============================================================================
+# region S2. Validation helpers
+# =============================================================================
+
+require_command() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
+assert_file_exists() { [[ -f "$1" ]] || die "Expected file does not exist: $1"; }
+assert_dir_exists() { [[ -d "$1" ]] || die "Expected directory does not exist: $1"; }
+is_positive_integer() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
+is_yes() { case "${1,,}" in y|yes|true|1|on) return 0 ;; *) return 1 ;; esac; }
+
+path_prepend() {
+    local dir="${1:?path_prepend requires a directory}"
+    [[ -d "$dir" ]] || return 0
+    case ":$PATH:" in *":$dir:"*) ;; *) export PATH="$dir:$PATH" ;; esac
+}
+
+# =============================================================================
+# endregion S2. Validation helpers
+# =============================================================================
+
+# =============================================================================
+# region S3. Path and file helpers
+# =============================================================================
+
+# --- Directory helpers -------------------------------------------------------
+
+ensure_dir() { run_cmd mkdir -p "$1"; }
+
+backup_if_exists() {
+    local path="$1"
+    [[ -e "$path" || -L "$path" ]] || return 0
+    local backup="${path}.bak.${RUN_ID}"
+    warn "Backing up existing path: $path -> $backup"
+    run_cmd cp -a "$path" "$backup"
+}
+
+# --- Safe file writing -------------------------------------------------------
+
+write_file() {
+    local path="$1"
+    local content="$2"
+    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]]; then
+        warn "File exists, skipping: $path  Use --force to replace after backup."
+        return 0
+    fi
+    ensure_dir "$(dirname "$path")"
+    [[ -e "$path" || -L "$path" ]] && backup_if_exists "$path"
+    if (( SCRIPT[APPLY] )); then
+        local tmp="${path}.tmp.$$"
+        printf "%s" "$content" > "$tmp"
+        mv "$tmp" "$path"
+        log "Wrote $path"
+    else
+        printf "[DRY RUN] write %q\n" "$path"
+    fi
+}
+
+write_file_stream() {
+    local path="$1"
+    local content
+    content="$(cat)"
+    write_file "$path" "$content"$'\n'
+}
+
+# =============================================================================
+# endregion S3. Path and file helpers
+# =============================================================================
+
+# =============================================================================
+# region S4. Command execution
+# =============================================================================
+
+run_cmd() {
+    if (( SCRIPT[APPLY] )); then
+        debug "RUN: $(printf '%q ' "$@")"
+        "$@"
+    else
+        printf "[DRY RUN] "
+        printf "%q " "$@"
+        printf "\n"
+    fi
+}
+
+capture_cmd() {
+    debug "CAPTURE: $(printf '%q ' "$@")"
+    "$@"
+}
+
+# =============================================================================
+# endregion S4. Command execution
+# =============================================================================
+
+# =============================================================================
+# region S5. Text and list helpers
+# =============================================================================
+
+join_by() {
+    local delimiter="$1"; shift || true
+    local first=1 item
+    for item in "$@"; do
+        if (( first )); then printf "%s" "$item"; first=0; else printf "%s%s" "$delimiter" "$item"; fi
+    done
+}
+
+split_csv() {
+    local csv="${1:-}" item
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        item="${item#${item%%[![:space:]]*}}"
+        item="${item%${item##*[![:space:]]}}"
+        [[ -n "$item" ]] && printf "%s\n" "$item"
+    done
+}
+
+# =============================================================================
+# endregion S5. Text and list helpers
+# =============================================================================
+
+# =============================================================================
+# region S6. Manifest and summary helpers
+# =============================================================================
+
+# --- Run manifest ------------------------------------------------------------
+
+make_run_manifest() {
+    debug "running make_run_manifest"
+    local path="$1"
+
+    write_file_stream "$path" <<-RUN_MANIFEST
+	version=$VERSION
+	author=$AUTHOR
+	run_id=$RUN_ID
+	timestamp=$(timestamp)
+	script=$SCRIPT_NAME
+	script_path=$SCRIPT_PATH
+	script_dir=$SCRIPT_DIR
+	profile=${INPUT[PROFILE]}
+	output_dir=${INPUT[OUTPUT_DIR]}
+	apply=${SCRIPT[APPLY]}
+	force=${SCRIPT[FORCE]}
+	verbose=${SCRIPT[VERBOSE]}
+	RUN_MANIFEST
+}
+
+# --- Case manifest -----------------------------------------------------------
+
+make_case_manifest() {
+    debug "running make_case_manifest"
+    local path="$1"
+
+    write_file_stream "$path" <<-CASE_MANIFEST
+	case_directory=${INPUT[CASE]}
+	assets=${INPUT[ASSET]}
+	severity=${INPUT[SEVERITY]}
+	site=${INPUT[SITE]}
+	files_added=${INPUT[FILE]}
+	files_type=${INPUT[TYPE]}
+	profile=${INPUT[PROFILE]}
+	CASE_MANIFEST
+}
+
+# --- Environment snapshot ----------------------------------------------------
+
+environment_check() {
+    debug "running environment_check"
+    local path="$1"
+
+    write_file_stream "$path" <<-ENVIRONMENT_CHECK
+	bash_version=$(bash --version)
+	UTC_run_time=$(timestamp)
+	user=$(uname -a)
+	uptime=$(uptime)
+	memory=$(free -h)
+	disk=$(df -h)
+	interfaces=$(lsusb)
+	system_specs=$(lspci)
+	dmesg_err=$(dmesg --level err)
+	ENVIRONMENT_CHECK
+}
+
+# --- Software snapshot -------------------------------------------------------
+
+software_check() {
+    debug "Software check placeholder ONLY"
+    local path="$1"
+
+    write_file_stream "$path" <<-SOFTWARE_CHECK
+
+	placeholder="placeholder"
+
+	SOFTWARE_CHECK
+}
+
+# --- Checksum verification ---------------------------------------------------
+
+verify_checksums() {
+    debug "Checksum placeholder ONLY"
+    local path="$1"
+
+    write_file_stream "$path" <<-VERIFY_CHECKSUM
+
+	placeholder="placeholder"
+
+	VERIFY_CHECKSUM
+}
+
+# =============================================================================
+# endregion S6. Manifest and summary helpers
+# =============================================================================
+
+# =============================================================================
+# region S6a. Report generation
+# =============================================================================
+
+initial_triage() {
+    info "Building initial_triage report"
+    local path="${1:?initial_triage requires an output path}"
+
+    # -------------------------------------------------------------------------
+    # region T1. Resolve report values
+    # -------------------------------------------------------------------------
+
+    case_id="${INPUT[CASE]:-Unknown Case-ID}"
+    title="${INPUT[TITLE]:-Untitled investigation}"
+    description="${INPUT[DESCRIPTION]:-No description provided}"
+    severity="${INPUT[SEVERITY]:-Unclassified}"
+    asset="${INPUT[ASSET]:-Asset Unknown}"
+    site="${INPUT[SITE]:-Unknown}"
+    case_status="${INPUT[STATUS]:-Open — pending initial triage}"
+    profile="${INPUT[PROFILE]:-default}"
+
+    reported_by="${INPUT[REPORTED_BY]:-Unknown}"
+    owner="${INPUT[OWNER]:-Unassigned}"
+    first_observed="${INPUT[FIRST_OBSERVED]:-Unknown}"
+    last_observed="${INPUT[LAST_OBSERVED]:-Unknown}"
+    operational_impact="${INPUT[OPERATIONAL_IMPACT]:-Not yet assessed}"
+    reproduction_status="${INPUT[REPRO_STATUS]:-Not attempted}"
+    containment_status="${INPUT[CONTAINMENT_STATUS]:-Not yet documented}"
+    affected_scope="${INPUT[AFFECTED_SCOPE]:-Unknown}"
+    recent_change="${INPUT[RECENT_CHANGE]:-None identified}"
+    confidence="${INPUT[TRIAGE_CONFIDENCE]:-Low — initial information only}"
+    generated_utc="$(timestamp)"
+
+    # -------------------------------------------------------------------------
+    # endregion T1. Resolve report values
+    # -------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # region T2. Log resolved values
+    # -------------------------------------------------------------------------
+
+    debug "Case-ID: $case_id"
+    debug "Case Title: $title"
+    debug "Case Description: $description"
+    debug "Case Severity: $severity"
+    debug "Asset(s) Affected: $asset"
+    debug "Site(s) affected: $site"
+    debug "Case status: $case_status"
+    debug "Capture profile: $profile"
+    debug "Reporter: $reported_by"
+    debug "Issue owner: $owner"
+    debug "First observed: $first_observed"
+    debug "Last observed: $last_observed"
+    debug "Operational impact: $operational_impact"
+    debug "Reproduction status: $reproduction_status"
+    debug "Containment status: $containment_status"
+    debug "Affected scope: $affected_scope"
+    debug "Recent change: $recent_change"
+    debug "Confidence: $confidence"
+    debug "Report generated at: $generated_utc"
+
+    # -------------------------------------------------------------------------
+    # endregion T2. Log resolved values
+    # -------------------------------------------------------------------------
+
+    # -------------------------------------------------------------------------
+    # region T3. Write initial triage report
+    # -------------------------------------------------------------------------
+
+    write_file_stream "$path" <<-INITIAL_TRIAGE
+	# ${case_id} — ${title}
+
+	> **Initial-triage snapshot:** This document records what is currently known,
+	> unknown, assumed, and planned. It is not a final root-cause determination.
+
+	## 1. Case control
+
+	- **Case ID:** \`${case_id}\`
+	- **Description:** ${description}
+	- **Severity:** ${severity}
+	- **Status:** ${case_status}
+	- **Asset:** \`${asset}\`
+	- **Site:** \`${site}\`
+	- **Reported by:** ${reported_by}
+	- **Investigation owner:** ${owner}
+	- **Collection profile:** \`${profile}\`
+	- **Report generated:** ${generated_utc}
+	- **Triage confidence:** ${confidence}
+
+	## 2. Executive summary
+
+	### Expected behavior
+
+	- TODO: State what the system, vehicle, subsystem, or operator expected to happen.
+
+	### Observed behavior
+
+	- TODO: State what was directly observed without interpretation.
+	- TODO: Include the relevant time window and operating phase.
+	- TODO: Describe whether the behavior was transient, persistent, or intermittent.
+
+	### Why it matters
+
+	- **Operational impact:** ${operational_impact}
+	- TODO: State the immediate consequence or credible risk.
+	- TODO: Distinguish actual impact from potential impact.
+
+	### Current disposition
+
+	- **Operational status:** ${case_status}
+	- **Containment status:** ${containment_status}
+	- TODO: State whether the asset may continue operating, is restricted, or is grounded.
+
+	## 3. Safety and containment
+
+	### Immediate safety assessment
+
+	- [ ] No personnel-safety impact identified.
+	- [ ] No public-safety impact identified.
+	- [ ] No loss-of-control or flyaway concern identified.
+	- [ ] No battery, thermal, fire, or electrical hazard identified.
+	- [ ] No evidence-preservation risk remains.
+	- [ ] Safety owner has reviewed the current disposition.
+
+	### Containment already performed
+
+	- TODO: Grounded, isolated, disabled, rolled back, restarted, swapped, or monitored.
+	- TODO: Record who authorized the action and when.
+	- TODO: Record whether containment altered or destroyed evidence.
+
+	### Stop-work or escalation triggers
+
+	- Reproduction involving unsafe vehicle behavior.
+	- Evidence of expanding fleet or site scope.
+	- Loss of trustworthy telemetry or event timing.
+	- Recurrence after containment.
+	- Any symptom inconsistent with the current severity classification.
+	- TODO: Add mission-specific escalation triggers.
+
+	## 4. Scope
+
+	- **First observed:** ${first_observed}
+	- **Last observed:** ${last_observed}
+	- **Known affected scope:** ${affected_scope}
+	- **Reproduction status:** ${reproduction_status}
+	- **Recent relevant change:** ${recent_change}
+
+	### Scope questions
+
+	- [ ] One asset or multiple assets?
+	- [ ] One site or multiple sites?
+	- [ ] One software or firmware version?
+	- [ ] One configuration or hardware revision?
+	- [ ] One operator or operational procedure?
+	- [ ] One environmental condition?
+	- [ ] One flight or mission phase?
+	- [ ] Similar symptoms found in earlier cases?
+
+	## 5. Event timeline
+
+	Use UTC as the canonical time. Preserve original local timestamps where useful.
+
+	| Time UTC | Time local | Event or action | Source | Confidence |
+	|---|---|---|---|---|
+	| TODO | TODO | Initial symptom observed | operator / log / alert | high / medium / low |
+	| TODO | TODO | Immediate response or containment | operator / system | high / medium / low |
+	| TODO | TODO | Evidence collected | file / command / photo | high / medium / low |
+
+	## 6. Reported behavior
+
+	Record the report as received before translating it into engineering language.
+
+	> TODO: Paste or summarize the original operator, customer, or automated report.
+
+	### Clarified symptom statement
+
+	- **Trigger or preceding event:** TODO
+	- **Observed response:** TODO
+	- **Expected response:** TODO
+	- **Duration:** TODO
+	- **Recovery behavior:** TODO
+	- **Frequency:** TODO
+	- **Repeatability:** TODO
+
+	## 7. Known facts
+
+	Include only statements directly supported by evidence or reliable observation.
+
+	- FACT: TODO
+	- Evidence: TODO
+	- Time: TODO
+	- Confidence: TODO
+
+	- FACT: TODO
+	- Evidence: TODO
+	- Time: TODO
+	- Confidence: TODO
+
+	- FACT: TODO
+	- Evidence: TODO
+	- Time: TODO
+	- Confidence: TODO
+
+	## 8. Evidence inventory
+
+	| Evidence ID | Type | Source | Time range | Integrity status | Relevance |
+	|---|---|---|---|---|---|
+	| E-001 | raw log | TODO | TODO | checksum pending | TODO |
+	| E-002 | configuration | TODO | TODO | checksum pending | TODO |
+	| E-003 | operator note | TODO | TODO | source recorded | TODO |
+
+	### Evidence still needed
+
+	- [ ] Vehicle or system logs.
+	- [ ] Ground-station or service logs.
+	- [ ] Active configuration.
+	- [ ] Software and firmware versions.
+	- [ ] Asset and hardware revision.
+	- [ ] Operator account of the event.
+	- [ ] Environmental and site conditions.
+	- [ ] Network or RF state.
+	- [ ] Photos or video.
+	- [ ] Known-good comparison data.
+	- [ ] Previous similar incidents.
+
+	## 9. Evidence quality and limitations
+
+	### Time integrity
+
+	- [ ] Relevant clocks were synchronized.
+	- [ ] Timezone and UTC offset are known.
+	- [ ] Timestamp discontinuities were checked.
+	- [ ] Logs cover the complete event window.
+
+	### Data integrity
+
+	- [ ] Original evidence has been preserved.
+	- [ ] Raw evidence has checksums.
+	- [ ] Derived output is stored separately from raw evidence.
+	- [ ] Collection commands and transformations are documented.
+	- [ ] Evidence provenance is known.
+
+	### Known limitations
+
+	- TODO: Missing interval, dropped packets, incomplete logs, uncertain clock,
+	overwritten data, manual transcription, unavailable configuration, or other
+	limitations.
+
+	## 10. Unknowns
+
+	State missing information as questions rather than silently filling gaps.
+
+	- UNKNOWN: TODO
+	- Why it matters: TODO
+	- Evidence needed: TODO
+
+	- UNKNOWN: TODO
+	- Why it matters: TODO
+	- Evidence needed: TODO
+
+	- UNKNOWN: TODO
+	- Why it matters: TODO
+	- Evidence needed: TODO
+
+	## 11. Assumptions requiring validation
+
+	- ASSUMPTION: TODO
+	- Basis: TODO
+	- Risk if wrong: TODO
+	- Validation method: TODO
+
+	- ASSUMPTION: TODO
+	- Basis: TODO
+	- Risk if wrong: TODO
+	- Validation method: TODO
+
+	- ASSUMPTION: TODO
+	- Basis: TODO
+	- Risk if wrong: TODO
+	- Validation method: TODO
+
+	## 12. Initial hypotheses
+
+	Hypotheses are working explanations, not conclusions.
+
+	| Rank | Hypothesis | Supporting evidence | Contradicting evidence | Discriminating test |
+	|---:|---|---|---|---|
+	| 1 | TODO | TODO | TODO | TODO |
+	| 2 | TODO | TODO | TODO | TODO |
+	| 3 | TODO | TODO | TODO | TODO |
+
+	### Avoid premature closure
+
+	- [ ] Considered hardware failure.
+	- [ ] Considered software or firmware behavior.
+	- [ ] Considered configuration mismatch.
+	- [ ] Considered RF or network behavior.
+	- [ ] Considered navigation or timing degradation.
+	- [ ] Considered environmental coupling.
+	- [ ] Considered operator procedure.
+	- [ ] Considered telemetry or observability failure.
+	- [ ] Considered multiple faults producing one symptom.
+	- [ ] Considered one fault producing multiple symptoms.
+
+	## 13. Reproduction plan
+
+	- **Current reproduction status:** ${reproduction_status}
+	- **Safe environment:** TODO
+	- **Required setup:** TODO
+	- **Known-good baseline:** TODO
+	- **Variable to change:** TODO
+	- **Variables to hold constant:** TODO
+	- **Signals to capture:** TODO
+	- **Expected failure signature:** TODO
+	- **Abort criteria:** TODO
+	- **Success criteria:** TODO
+
+	### Minimal reproduction steps
+
+	1. TODO
+	2. TODO
+	3. TODO
+	4. TODO
+
+	## 14. Immediate actions
+
+	| Priority | Owner | Action | Purpose | Status | Result |
+	|---|---|---|---|---|---|
+	| P0 | TODO | Confirm safe disposition | Protect personnel and asset | open | pending |
+	| P1 | TODO | Preserve event evidence | Prevent evidence loss | open | pending |
+	| P1 | TODO | Establish event timeline | Align data sources | open | pending |
+	| P2 | TODO | Compare against known-good case | Narrow scope | open | pending |
+	| P2 | TODO | Execute discriminating test | Separate hypotheses | open | pending |
+
+	## 15. Escalation and handoff
+
+	### Escalation needed?
+
+	- [ ] Safety
+	- [ ] Flight operations
+	- [ ] Hardware
+	- [ ] Software or firmware
+	- [ ] RF or networking
+	- [ ] Navigation or controls
+	- [ ] Reliability or fleet engineering
+	- [ ] Customer or field operations
+	- [ ] Regulatory or compliance
+	- [ ] No escalation currently required
+
+	### What the receiving engineer needs
+
+	- **Decision or help requested:** TODO
+	- **Evidence location:** \`${INPUT[OUTPUT_DIR]}/${case_id}/evidence\`
+	- **Most relevant artifact:** TODO
+	- **Current leading hypothesis:** TODO
+	- **Most important unknown:** TODO
+	- **Next recommended action:** TODO
+	- **Next update expected:** TODO
+
+	## 16. Decision log
+
+	Append decisions rather than replacing older entries.
+
+	| Time UTC | Decision | Basis | Owner | Revisit condition |
+	|---|---|---|---|---|
+	| ${generated_utc} | Case opened for initial triage | Initial report | ${owner} | New evidence received |
+	| TODO | TODO | TODO | TODO | TODO |
+
+	## 17. Exit criteria for initial triage
+
+	Initial triage is complete when:
+
+	- [ ] Safety and operational disposition are explicit.
+	- [ ] The symptom is written in observable terms.
+	- [ ] Relevant evidence is preserved and indexed.
+	- [ ] Known facts are separated from assumptions.
+	- [ ] Scope is bounded or documented as unknown.
+	- [ ] At least one discriminating next action is assigned.
+	- [ ] Escalation needs are clear.
+	- [ ] The next owner can continue without verbal-only context.
+
+	---
+
+	**Operator principle:** Observe directly. Validate physically. Debug iteratively.
+	INITIAL_TRIAGE
+    # -------------------------------------------------------------------------
+    # endregion T3. Write initial triage report
+    # -------------------------------------------------------------------------
+}
+
+# --- Run summary -------------------------------------------------------------
+
+write_summary() {
+    local path="$1"
+    local status="$2"
+    write_file_stream "$path" <<-SUMMARY
+	status=$status
+	run_id=$RUN_ID
+	timestamp=$(timestamp)
+	output_dir=${INPUT[OUTPUT_DIR]}
+	profile=${INPUT[PROFILE]}
+	SUMMARY
+}
+
+# =============================================================================
+# endregion S6A. Report generation
+# =============================================================================
+
+# =============================================================================
+# region S7. CLI
+# =============================================================================
+
+# --- Usage text --------------------------------------------------------------
+
+usage() {
+    cat <<-USAGE
+	# ┌──────────────────────────────────────────────────────────────┐
+	# │                         V / H                                │
+	# │_                      VEC HALCYON                           _│
+	#                     tracehold v${VERSION}
+	# │-         OBSERVE • VALIDATE • DEBUG • PROTECT               -│
+	# └──────────────────────────────────────────────────────────────┘
+
+	Turn an ambiguous field problem into a timestamped,
+	integrity-conscious engineering case file.
+
+	Usage:
+		${SCRIPT_NAME} COMMAND [options]
+
+	Commands:
+		new
+			Create a new investigation case and its initial artifacts.
+
+		add
+			Add evidence, logs, photographs, notes, or other files
+			to an existing case.
+
+		collect
+			Collect system or environment data directly into a case.
+
+		verify
+			Verify case structure, evidence integrity, and checksums.
+
+		bundle
+			Package a case into a portable .tar.gz archive.
+
+
+	────────────────────────────────────────────────────────────────
+	NEW CASE
+	────────────────────────────────────────────────────────────────
+
+	Create a new case under:
+
+		${INPUT[OUTPUT_DIR]}/{$CASE_PREFIX}_<timestamp>_<title>
+
+	Required:
+		--title STRING
+			Short investigation title used in the generated case ID.
+
+		--description STRING
+			Concise description of the observed problem or symptom.
+
+		--severity LEVEL
+			Initial priority classification, such as P0 through P4.
+
+		--asset ID [ID ...]
+			One or more affected vehicle, device, or system identifiers.
+
+	Recommended:
+		--site ID [ID ...]
+			One or more affected site or operating-location identifiers.
+
+		--reported-by NAME
+			Person, team, customer, operator, or system that reported
+			the issue.
+
+		--owner NAME [NAME ...]
+			One or more engineers or teams responsible for the investigation.
+
+		--first-observed UTC
+			Earliest known observation time.
+
+		--last-observed UTC
+			Most recent known observation time.
+
+		--operational-impact STRING
+			Known operational consequence or credible risk.
+
+		--affected-scope STRING
+			Known affected fleet, asset, site, version, or population.
+
+		--recent-change STRING [STRING ...]
+			One or more recent software, firmware, hardware, configuration,
+			network, procedural, or environmental changes. Quote values
+			that contain spaces.
+
+	Optional triage state:
+		--status STRING
+			Current operational or investigation state.
+
+		--repro-status STRING
+			Reproduction state, such as:
+				not-attempted
+				not-reproduced
+				intermittent
+				reproduced
+
+		--containment-status STRING
+			Current containment action or disposition.
+
+		--triage-confidence LEVEL
+			Confidence in the current triage assessment, such as:
+				low
+				medium
+				high
+
+		--profile NAME
+			Collection or analysis profile to apply.
+
+			Planned profiles:
+				default
+				general
+				bash
+				python
+				git
+
+
+	Example:
+		${SCRIPT_NAME} new \\
+			--title "intermittent_link_loss" \\
+			--description "Vehicle loses command link during climb" \\
+			--severity P1 \\
+			--asset AV-042 \\
+			--site SAC-01 \\
+			--reported-by "Flight Operations" \\
+			--owner "V Halcyon" \\
+			--operational-impact "Mission abort and temporary grounding" \\
+			--affected-scope "One vehicle; fleet scope unknown" \\
+			--recent-change "Radio firmware updated before first event" \\
+			--profile general \\
+			--apply
+
+	New-case behavior:
+		Creates the case directory structure and initial artifacts,
+		including:
+
+			manifest/
+				case_manifest.txt
+				environment.txt
+				software_versions.txt
+				checksums.sha256
+
+			evidence/
+				raw/
+				photos/
+				logs/
+				operator_notes/
+
+			derived/
+				timelines/
+				extracts/
+				figures/
+
+			commands/
+				collection.log
+				replay.sh
+
+			reports/
+				initial_triage.md
+				handoff.md
+
+
+	────────────────────────────────────────────────────────────────
+	ADD EVIDENCE
+	────────────────────────────────────────────────────────────────
+
+	Add a file to an existing case.
+
+	Required:
+		--case CASE_ID
+			Existing case identifier.
+
+		--file PATH
+			Path to the file being added.
+
+		--type TYPE
+			Evidence classification.
+
+			Available types:
+				raw
+				photo
+				log
+				note
+
+	Example:
+		${SCRIPT_NAME} add \\
+			--case GC_20260715_184500_UTC_link_loss \\
+			--file ./vehicle.log \\
+			--type log \\
+			--apply
+
+
+	────────────────────────────────────────────────────────────────
+	COLLECT
+	────────────────────────────────────────────────────────────────
+
+	Collect data directly into an existing case.
+
+	Required:
+		--case CASE_ID
+			Existing case identifier.
+
+		--profile NAME
+			Collection profile to execute.
+
+	Example:
+		${SCRIPT_NAME} collect \\
+			--case GC_20260715_184500_UTC_link_loss \\
+			--profile general \\
+			--apply
+
+
+	────────────────────────────────────────────────────────────────
+	VERIFY
+	────────────────────────────────────────────────────────────────
+
+	Validate case structure, required artifacts, and evidence integrity.
+
+	Required:
+		--case CASE_ID
+			Existing case identifier.
+
+	Example:
+		${SCRIPT_NAME} verify \\
+			--case GC_20260715_184500_UTC_link_loss
+
+
+	────────────────────────────────────────────────────────────────
+	BUNDLE
+	────────────────────────────────────────────────────────────────
+
+	Package an existing case into a portable .tar.gz archive.
+
+	Required:
+		--case CASE_ID
+			Existing case identifier.
+
+	Example:
+		${SCRIPT_NAME} bundle \\
+			--case GC_20260715_184500_UTC_link_loss \\
+			--apply
+
+
+	────────────────────────────────────────────────────────────────
+	PATH AND OUTPUT OPTIONS
+	────────────────────────────────────────────────────────────────
+
+		--case CASE_ID
+			Select an existing case.
+
+		--output-dir DIR
+			Override the default case-storage directory.
+
+			Default:
+				${INPUT[OUTPUT_DIR]}
+
+
+	────────────────────────────────────────────────────────────────
+	EXECUTION OPTIONS
+	────────────────────────────────────────────────────────────────
+
+		--apply
+			Perform filesystem changes and execute commands.
+
+		--dry-run
+			Print intended actions without changing anything.
+			This is the default behavior.
+
+		--force
+			Replace generated files after preserving backups.
+
+		-v, --verbose
+			Enable detailed diagnostic output.
+
+		--self-test
+			Run the built-in smoke test using a temporary directory.
+
+		--version
+			Print the current tracehold version.
+
+		-h, --help
+			Show this help text.
+
+
+	────────────────────────────────────────────────────────────────
+	GENERAL EXAMPLES
+	────────────────────────────────────────────────────────────────
+
+	Preview creation without changing the filesystem:
+
+		${SCRIPT_NAME} new \\
+			--title "gps_quality_degradation" \\
+			--description "Position estimate becomes unstable near Site 04" \\
+			--severity P2 \\
+			--asset AV-017
+
+	Create the case:
+
+		${SCRIPT_NAME} new \\
+			--title "gps_quality_degradation" \\
+			--description "Position estimate becomes unstable near Site 04" \\
+			--severity P2 \\
+			--asset AV-017 \\
+			--site SITE-04 \\
+			--apply
+
+	Run with verbose diagnostics:
+
+		${SCRIPT_NAME} new \\
+			--title "gps_quality_degradation" \\
+			--description "Position estimate becomes unstable near Site 04" \\
+			--severity P2 \\
+			--asset AV-017 \\
+			--apply \\
+			--verbose
+
+
+	Operator principle:
+		Observe directly. Validate physically. Debug iteratively.
+	USAGE
+}
+
+# --- CLI helpers -------------------------------------------------------------
+
+set_cli_value() {
+    local option="$1"
+    local destination_name="$2"
+    local was_set_name="$3"
+    local value="${4-}"
+    local -n destination="$destination_name"
+    local -n was_set="$was_set_name"
+
+    [[ -n "$value" ]] || die "Missing value for ${option}"
+    [[ "$value" != -* ]] || die "Missing value for ${option}; found option '${value}' instead"
+
+    destination="$value"
+    was_set=1
+}
+
+collect_cli_values() {
+    local option="$1"
+    local destination_name="$2"
+    local was_set_name="$3"
+    local -n destination="$destination_name"
+    local -n was_set="$was_set_name"
+    local count=0
+
+    shift 3
+
+    while (( $# > 0 )) && [[ "$1" != -* ]]; do
+        destination+=("$1")
+        (( count += 1 ))
+        shift
+    done
+
+    (( count > 0 )) || die "${option} requires at least one value"
+
+    was_set=1
+    CLI_VALUES_CONSUMED="$count"
+}
+
+select_command() {
+    local command="$1"
+    local selected_count
+
+    selected_count=$((
+        COMMANDS[NEW]
+        + COMMANDS[ADD]
+        + COMMANDS[COLLECT]
+        + COMMANDS[VERIFY]
+        + COMMANDS[BUNDLE]
+    ))
+
+    (( selected_count == 0 )) || die "Only one command may be selected"
+
+    case "$command" in
+        new)     COMMANDS[NEW]=1 ;;
+        add)     COMMANDS[ADD]=1 ;;
+        collect) COMMANDS[COLLECT]=1 ;;
+        verify)  COMMANDS[VERIFY]=1 ;;
+        bundle)  COMMANDS[BUNDLE]=1 ;;
+        *)       die "Unknown command: ${command}" ;;
+    esac
+
+    debug "Command '${command}' selected"
+}
+
+sync_variadic_inputs() {
+    if (( WAS_SET[ASSET] )); then
+        INPUT[ASSET]="$(join_by ', ' "${ASSETS[@]}")"
+    fi
+
+    if (( WAS_SET[SITE] )); then
+        INPUT[SITE]="$(join_by ', ' "${SITES[@]}")"
+    fi
+
+    if (( WAS_SET[OWNER] )); then
+        INPUT[OWNER]="$(join_by ', ' "${OWNERS[@]}")"
+    fi
+
+    if (( WAS_SET[RECENT_CHANGE] )); then
+        INPUT[RECENT_CHANGE]="$(join_by '; ' "${RECENT_CHANGES[@]}")"
+    fi
+}
+
+# --- Argument parsing --------------------------------------------------------
+
+parse_args() {
+    local CLI_VALUES_CONSUMED=0
+
+    while (( $# > 0 )); do
+        case "$1" in
+            # Case description
+            --title)
+                set_cli_value "$1" "INPUT[TITLE]" "WAS_SET[TITLE]" "${2-}"
+                shift 2
+                ;;
+            --description)
+                set_cli_value "$1" "INPUT[DESCRIPTION]" "WAS_SET[DESCRIPTION]" "${2-}"
+                shift 2
+                ;;
+            --asset)
+                shift
+                collect_cli_values "--asset" ASSETS "WAS_SET[ASSET]" "$@"
+                shift "$CLI_VALUES_CONSUMED"
+                ;;
+            --severity)
+                set_cli_value "$1" "INPUT[SEVERITY]" "WAS_SET[SEVERITY]" "${2-}"
+                shift 2
+                ;;
+            --site)
+                shift
+                collect_cli_values "--site" SITES "WAS_SET[SITE]" "$@"
+                shift "$CLI_VALUES_CONSUMED"
+                ;;
+
+            # Ownership and timeline
+            --reported-by)
+                set_cli_value "$1" "INPUT[REPORTED_BY]" "WAS_SET[REPORTED_BY]" "${2-}"
+                shift 2
+                ;;
+            --owner)
+                shift
+                collect_cli_values "--owner" OWNERS "WAS_SET[OWNER]" "$@"
+                shift "$CLI_VALUES_CONSUMED"
+                ;;
+            --first-observed)
+                set_cli_value "$1" "INPUT[FIRST_OBSERVED]" "WAS_SET[FIRST_OBSERVED]" "${2-}"
+                shift 2
+                ;;
+            --last-observed)
+                set_cli_value "$1" "INPUT[LAST_OBSERVED]" "WAS_SET[LAST_OBSERVED]" "${2-}"
+                shift 2
+                ;;
+
+            # Triage state
+            --operational-impact)
+                set_cli_value "$1" "INPUT[OPERATIONAL_IMPACT]" "WAS_SET[OPERATIONAL_IMPACT]" "${2-}"
+                shift 2
+                ;;
+            --affected-scope)
+                set_cli_value "$1" "INPUT[AFFECTED_SCOPE]" "WAS_SET[AFFECTED_SCOPE]" "${2-}"
+                shift 2
+                ;;
+            --recent-change)
+                shift
+                collect_cli_values "--recent-change" RECENT_CHANGES "WAS_SET[RECENT_CHANGE]" "$@"
+                shift "$CLI_VALUES_CONSUMED"
+                ;;
+            --status)
+                set_cli_value "$1" "INPUT[STATUS]" "WAS_SET[STATUS]" "${2-}"
+                shift 2
+                ;;
+            --repro-status)
+                set_cli_value "$1" "INPUT[REPRO_STATUS]" "WAS_SET[REPRO_STATUS]" "${2-}"
+                shift 2
+                ;;
+            --containment-status)
+                set_cli_value "$1" "INPUT[CONTAINMENT_STATUS]" "WAS_SET[CONTAINMENT_STATUS]" "${2-}"
+                shift 2
+                ;;
+            --triage-confidence)
+                set_cli_value "$1" "INPUT[TRIAGE_CONFIDENCE]" "WAS_SET[TRIAGE_CONFIDENCE]" "${2-}"
+                shift 2
+                ;;
+
+            # Case and evidence selection
+            --profile)
+                set_cli_value "$1" "INPUT[PROFILE]" "WAS_SET[PROFILE]" "${2-}"
+                shift 2
+                ;;
+            --case)
+                set_cli_value "$1" "INPUT[CASE]" "WAS_SET[CASE]" "${2-}"
+                shift 2
+                ;;
+            --file)
+                set_cli_value "$1" "INPUT[FILE]" "WAS_SET[FILE]" "${2-}"
+                shift 2
+                ;;
+            --type)
+                set_cli_value "$1" "INPUT[TYPE]" "WAS_SET[TYPE]" "${2-}"
+                shift 2
+                ;;
+            --output-dir)
+                set_cli_value "$1" "INPUT[OUTPUT_DIR]" "WAS_SET[OUTPUT_DIR]" "${2-}"
+                shift 2
+                ;;
+
+            # Execution behavior
+            --apply)
+                SCRIPT[APPLY]=1
+                shift
+                ;;
+            --dry-run|--no-load-run)
+                SCRIPT[APPLY]=0
+                shift
+                ;;
+            --force)
+                SCRIPT[FORCE]=1
+                shift
+                ;;
+            -v|--verbose)
+                SCRIPT[VERBOSE]=1
+                shift
+                ;;
+            --self-test)
+                SCRIPT[SELF_TEST]=1
+                shift
+                ;;
+            --version)
+                printf '%s\n' "$VERSION"
+                exit 0
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+
+            # Commands
+            new|add|collect|verify|bundle)
+                select_command "$1"
+                shift
+                ;;
+
+            --)
+                shift
+                (( $# == 0 )) || die "Unexpected positional argument after --: $1"
+                break
+                ;;
+            -*)
+                die "Unknown option: $1"
+                ;;
+            *)
+                die "Unknown argument: $1"
+                ;;
+        esac
+    done
+
+    sync_variadic_inputs
+}
+
+# --- Configuration validation ------------------------------------------------
+
+validate_config() {
+    local command_count
+
+    debug "running validate_config..."
+
+    command_count=$((
+        COMMANDS[NEW]
+        + COMMANDS[ADD]
+        + COMMANDS[COLLECT]
+        + COMMANDS[VERIFY]
+        + COMMANDS[BUNDLE]
+    ))
+
+    (( command_count == 1 )) || die "Select exactly one command: new, add, collect, verify, or bundle"
+
+    if (( COMMANDS[NEW] )); then
+        (( WAS_SET[CASE] == 0 )) || die "--case cannot be used with the new command"
+        (( WAS_SET[TITLE] )) || die "Input --title required"
+        (( WAS_SET[DESCRIPTION] )) || die "Input --description required"
+        (( WAS_SET[SEVERITY] )) || die "Input --severity required"
+        (( WAS_SET[ASSET] )) || die "Input --asset required"
+
+        [[ "${INPUT[SEVERITY]}" =~ ^P[0-4]$ ]] \
+            || die "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4"
+
+        INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
+        debug "Generated Case-ID: ${INPUT[CASE]}"
+        return 0
+    fi
+
+    (( WAS_SET[TITLE] == 0 )) || die "--title is only valid with the new command"
+    (( WAS_SET[CASE] )) || die "Input --case required"
+
+    [[ -d "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}" ]] \
+        || die "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]} does not exist"
+
+    if (( COMMANDS[ADD] )); then
+        (( WAS_SET[FILE] )) || die "Input --file required"
+        [[ -f "${INPUT[FILE]}" ]] || die "${INPUT[FILE]} is not a regular file"
+        (( WAS_SET[TYPE] )) || die "Input --type required"
+
+        case "${INPUT[TYPE]}" in
+            raw|photo|log|note) ;;
+            *) die "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" ;;
+        esac
+    fi
+
+    if (( COMMANDS[COLLECT] )) && (( WAS_SET[PROFILE] == 0 )); then
+        debug "No --profile supplied; using '${INPUT[PROFILE]}'"
+    fi
+
+    if (( COMMANDS[VERIFY] )); then
+        debug "Running validate_config VERIFY"
+    fi
+
+    if (( COMMANDS[BUNDLE] )); then
+        debug "Running validate_config BUNDLE"
+    fi
+}
+
+# =============================================================================
+# endregion S7. CLI
+# =============================================================================
+
+# =============================================================================
+# region S8. Workflow
+# =============================================================================
+
+# --- Main workflow -----------------------------------------------------------
+
+run_workflow() {
+    info "Starting workflow"
+    info "Run ID: $RUN_ID"
+    ensure_dir "${INPUT[OUTPUT_DIR]}/logs"
+    ensure_dir "${INPUT[OUTPUT_DIR]}/artifacts"
+
+    make_run_manifest "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+
+    if (( COMMANDS[NEW] )); then
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest"
+
+        make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+        environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
+        software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
+        verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
+
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes"
+
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/timelines"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/extracts"
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/figures"
+
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/collection.log" "test collection.log"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/replay.sh" "test replay.sh"
+
+        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports"
+        initial_triage "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/initial_triage.md"
+        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/handoff.md" "test handoff.md"
+    fi
+
+    if (( COMMANDS[ADD] )); then
+
+        assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+        assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+
+        debug "Adding ${INPUT[TYPE]} file: ${INPUT[FILE]} to ${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+
+        if [[ -f "${INPUT[FILE]}" && -e "${INPUT[FILE]}" ]]; then
+
+            case "${INPUT[TYPE]}" in
+                raw) ;;
+                photo)  ;;
+                log)  ;;
+                note) ;;
+                *) warn "Unknown file type. Available: 'raw','photo','log','note'" ;;
+            esac
+        fi
+
+    fi
+
+    if (( COMMANDS[COLLECT] )); then
+        debug "Collect = ${COMMANDS[COLLECT]}"
+    fi
+
+    if (( COMMANDS[VERIFY] )); then
+        debug "Verify = ${COMMANDS[VERIFY]}"
+    fi
+
+    if (( COMMANDS[BUNDLE] )); then
+        debug "${COMMANDS[BUNDLE]}"
+    fi
+
+    write_summary "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt" "ok"
+    log "tracehold: workflow complete"
+}
+
+# --- Self-test ---------------------------------------------------------------
+
+run_self_test() {
+    local tmp_dir old_apply old_output
+    tmp_dir="$(mktemp -d)"
+    info "Self-test temp dir: $tmp_dir"
+    old_apply="${SCRIPT[APPLY]}"
+    old_output="${INPUT[OUTPUT_DIR]}"
+    SCRIPT[APPLY]=1
+    INPUT[OUTPUT_DIR]="$tmp_dir/output"
+    INPUT[PROFILE]="${INPUT[PROFILE]:-default}"
+
+    info "Output Directory: ${INPUT[OUTPUT_DIR]}"
+    info "Input Path: ${INPUT[PROFILE]}"
+
+    validate_config
+    run_workflow
+    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
+
+    if (( SCRIPT[VERBOSE] )); then
+        debug "First 5 lines run_manifest:";
+        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+        debug "First 5 lines summary:"
+        head -n 5 "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
+    fi
+
+    SCRIPT[APPLY]="$old_apply"
+    INPUT[OUTPUT_DIR]="$old_output"
+
+    # rm -rf "$tmp_dir"
+    log "Self-test passed"
+}
+
+# =============================================================================
+# endregion S8. Workflow
+# =============================================================================
+
+# =============================================================================
+# region S9. Main
+# =============================================================================
+
+main() {
+
+    install_runtime
+
+    parse_args "$@"
+
+    if (( SCRIPT[SELF_TEST] )); then
+        run_self_test
+    else
+        validate_config
+        run_workflow
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi
+
+# =============================================================================
+# endregion S9. Main
+# =============================================================================
