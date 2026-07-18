@@ -1,0 +1,1329 @@
+#!/usr/bin/env bash
+# operator_laptop_bootstrap_v3.1.1.sh
+#
+# Mint/Ubuntu-style operator laptop bootstrap.
+#
+# v3.1.1 intent:
+#   - Keep the bootstrap focused on laptop/workspace/config/theme setup.
+#   - Do not embed or write reusable sub-scripts/templates like plot.py, vecbin,
+#     cleanup-downloads, or operator_*_template.*. Use the v3.0.0 standalone files.
+#   - Use indented heredocs (<<-EOF / <<-'EOF') so generated-file sections stay
+#     readable and foldable inside functions.
+#   - Preserve Halcyon soot/amber/signal-blue/moss colors across shell, terminal,
+#     matplotlib, Obsidian, GTK, and optional VS Code settings.
+#   - Set the interactive prompt to: Vector-Halcyon |  <current path>:
+#   - Configure Terminator with 80% transparency and a default 3-pane cockpit layout.
+#   - Prefer JetBrainsMono Nerd Font ExtraThin at 11 pt wherever this script writes UI config.
+#
+# Examples:
+#   bash operator_laptop_bootstrap_v3.1.1.sh
+#   bash operator_laptop_bootstrap_v3.1.1.sh --apply --no-install
+#   bash operator_laptop_bootstrap_v3.1.1.sh --apply --force --no-vscode-user
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# region S0: Metadata + default configuration
+# ==============================================================================
+
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPT_NAME="$(basename "$SCRIPT_PATH")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+RUN_ID="$(date +"%Y%m%d_%H%M%S")"
+
+AUTHOR="V Halcyon"
+VERSION="3.1.1"
+
+# Dry-run by default. Nothing changes unless --apply is passed.
+APPLY=0
+FORCE=0
+VERBOSE=0
+
+# Install/config toggles.
+DO_INSTALL=1
+INSTALL_OBSIDIAN=1
+APPLY_SYSTEM_THEME=1
+SET_VSCODE_USER_SETTINGS=1
+VEC_ROOT_CUSTOM=0
+VAULT_CUSTOM=0
+ENGINEERING_CUSTOM=0
+
+# Workspace roots. Folder names stay normal; the top-level namespace is ~/Vec.
+VEC_ROOT="${VEC_ROOT:-$HOME/Vec}"
+VAULT_DIR="${VAULT_DIR:-$VEC_ROOT/Vaults/Work}"
+ENGINEERING_DIR="${ENGINEERING_DIR:-$VEC_ROOT/Engineering}"
+
+# Common managed paths.
+LOCAL_BIN="$HOME/.local/bin"
+HALCYON_CONFIG_DIR="$HOME/.config/halcyon"
+MANIFEST_DIR="$ENGINEERING_DIR/logs/bootstrap"
+
+# Preferred UI/terminal font. Pango-style strings work for GTK and Terminator.
+HALCYON_FONT_FAMILY="JetBrainsMono Nerd Font ExtraThin"
+HALCYON_FONT_SIZE="11"
+HALCYON_FONT_PANGO="${HALCYON_FONT_FAMILY} ${HALCYON_FONT_SIZE}"
+HALCYON_TERMINATOR_TRANSPARENCY="0.80"
+
+# Halcyon palette: ordered from soot/structure through amber, warmth, signal, moss, bone.
+HALCYON_SOOT="#07090D"
+HALCYON_OBSIDIAN_SHELL="#0B0D10"
+HALCYON_DARK_COCKPIT="#11151C"
+HALCYON_COCKPIT_PANEL="#282829"
+HALCYON_BURNT_UMBER="#1A1410"
+HALCYON_OIL_BRONZE="#3A2A18"
+HALCYON_DIM_AMBER_GRID="#6B5A3A"
+HALCYON_TARNISHED_BRASS="#7A653E"
+HALCYON_BRASS="#B88746"
+HALCYON_FORGE_GOLD="#D89A3D"
+HALCYON_AMBER="#FFBF00"
+HALCYON_EMBER_RUST="#B7410E"
+HALCYON_COPPER_ROSE="#C97C5D"
+HALCYON_SMOKED_ROSE="#7B4E57"
+HALCYON_LOW_VIOLET="#A77BD4"
+HALCYON_TELEM_BLUE="#4A7C8C"
+HALCYON_SIGNAL_BLUE="#76B7B2"
+HALCYON_OXI_MOSS="#4F6F63"
+HALCYON_MOSS="#8FA37A"
+HALCYON_WARM_BONE="#F2E8D5"
+
+# Compatibility aliases used by existing configs/scripts.
+HALCYON_BG="$HALCYON_SOOT"
+HALCYON_BG_ALT="$HALCYON_COCKPIT_PANEL"
+HALCYON_FG="$HALCYON_WARM_BONE"
+HALCYON_GOLD="$HALCYON_AMBER"
+HALCYON_RED="$HALCYON_EMBER_RUST"
+HALCYON_GREEN="$HALCYON_MOSS"
+HALCYON_BLUE="$HALCYON_SIGNAL_BLUE"
+
+# endregion S0
+
+# region S1: Logging and safety helpers
+# ==============================================================================
+
+log()   { printf "\033[1;32m[OK]\033[0m %s\n" "$*"; }
+info()  { printf "\033[1;34m[INFO]\033[0m %s\n" "$*"; }
+warn()  { printf "\033[1;33m[WARN]\033[0m %s\n" "$*"; }
+err()   { printf "\033[1;31m[ERR]\033[0m %s\n" "$*" >&2; }
+debug() { if (( VERBOSE )); then printf "\033[0;36m[DEBUG]\033[0m %s\n" "$*"; fi; return 0; }
+
+die() { err "$*"; exit 1; }
+stamp() { date +"%Y%m%d_%H%M%S"; }
+timestamp() { date +"%Y-%m-%dT%H:%M:%S%z"; }
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+run() {
+	# Main side-effect gate. In dry-run mode, print instead of executing.
+	if (( APPLY )); then
+		debug "RUN: $*"
+		"$@"
+	else
+		printf '[DRY RUN] '
+		printf '%q ' "$@"
+		printf '\n'
+	fi
+}
+
+run_optional() {
+	# Same as run(), but failures are warnings. Useful for desktop settings.
+	if (( APPLY )); then
+		debug "TRY: $*"
+		"$@" || warn "Optional command failed or is unsupported: $*"
+	else
+		printf '[DRY RUN optional] '
+		printf '%q ' "$@"
+		printf '\n'
+	fi
+}
+
+ensure_dir() {
+	local dir="${1:?ensure_dir requires a directory}"
+	run mkdir -p "$dir"
+}
+
+backup_if_exists() {
+	local path="${1:?backup_if_exists requires a path}"
+	if [[ -e "$path" || -L "$path" ]]; then
+		local backup="${path}.bak.$(stamp)"
+		warn "Backing up existing path: $path -> $backup"
+		run cp -a "$path" "$backup"
+	fi
+}
+
+write_file() {
+	# Managed-file writer:
+	#   - skip existing files unless --force is set
+	#   - backup before replacement when --force is set
+	local path="${1:?write_file requires a path}"
+	local content="${2-}"
+
+	ensure_dir "$(dirname "$path")"
+
+	if [[ -e "$path" && "$FORCE" -ne 1 ]]; then
+		warn "Exists, skipping: $path  Use --force to replace."
+		return 0
+	fi
+
+	if [[ -e "$path" ]]; then
+		backup_if_exists "$path"
+	fi
+
+	if (( APPLY )); then
+		printf '%s' "$content" > "$path"
+		log "Wrote $path"
+	else
+		echo "[DRY RUN] write $path"
+	fi
+}
+
+write_file_stream() {
+	# Use with indented heredocs:
+	#   write_file_stream "$path" <<-EOF
+	#       content
+	#   EOF
+	local path="${1:?write_file_stream requires a path}"
+	local content
+	content="$(cat)"
+	write_file "$path" "$content"$'\n'
+}
+
+append_once() {
+	# Append exactly one source/config line to an existing file.
+	local path="${1:?append_once requires a path}"
+	local marker="${2:?append_once requires a marker}"
+	local line="${3:?append_once requires a line}"
+
+	ensure_dir "$(dirname "$path")"
+
+	if [[ -f "$path" ]] && grep -Fq "$marker" "$path"; then
+		log "$path already contains: $marker"
+		return 0
+	fi
+
+	if (( APPLY )); then
+		printf '\n%s\n%s\n' "$marker" "$line" >> "$path"
+		log "Appended to $path: $marker"
+	else
+		echo "[DRY RUN] append to $path: $marker"
+	fi
+}
+
+# endregion S1
+
+# region S2: CLI options
+# ==============================================================================
+
+usage() {
+	cat <<-EOF
+	Usage: bash $SCRIPT_NAME [options]
+
+	Operator laptop bootstrap v$VERSION.
+	Dry-run by default. Use --apply to make changes.
+
+	Options:
+	  --apply                 Actually make changes. Default is dry-run.
+	  --dry-run               Print actions without changing anything.
+	  --force                 Replace generated config files after making backups.
+	  --no-install            Skip apt/flatpak install steps.
+	  --no-obsidian           Skip Obsidian Flatpak install.
+	  --no-system-theme       Skip live gsettings theme changes; still writes config files.
+	  --no-vscode-user        Do not write ~/.config/Code/User/settings.json.
+	  --vec-root DIR          Top-level Vec directory. Default: $VEC_ROOT
+	  --vault DIR             Vault path. Default: $VAULT_DIR
+	  --engineering DIR       Engineering dir. Default: $ENGINEERING_DIR
+	  -v, --verbose           Enable debug logging.
+	  -h, --help              Show help.
+
+	Examples:
+	  bash $SCRIPT_NAME
+	  bash $SCRIPT_NAME --apply --no-install
+	  bash $SCRIPT_NAME --apply --force
+	  bash $SCRIPT_NAME --apply --vec-root "\$HOME/Vec"
+	EOF
+}
+
+parse_args() {
+	while (($#)); do
+		case "$1" in
+			--apply) APPLY=1 ;;
+			--dry-run) APPLY=0 ;;
+			--force) FORCE=1 ;;
+			--no-install) DO_INSTALL=0 ;;
+			--no-obsidian) INSTALL_OBSIDIAN=0 ;;
+			--no-system-theme) APPLY_SYSTEM_THEME=0 ;;
+			--no-vscode-user) SET_VSCODE_USER_SETTINGS=0 ;;
+			--vec-root) shift; VEC_ROOT="${1:?missing path}"; VEC_ROOT_CUSTOM=1 ;;
+			--vault) shift; VAULT_DIR="${1:?missing path}"; VAULT_CUSTOM=1 ;;
+			--engineering) shift; ENGINEERING_DIR="${1:?missing path}"; ENGINEERING_CUSTOM=1 ;;
+			-v|--verbose) VERBOSE=1 ;;
+			-h|--help) usage; exit 0 ;;
+			*) err "Unknown option: $1"; usage; exit 1 ;;
+		esac
+		shift
+	done
+
+	# Recompute derived paths after CLI overrides.
+	if (( VEC_ROOT_CUSTOM )) && (( ! ENGINEERING_CUSTOM )); then
+		ENGINEERING_DIR="$VEC_ROOT/Engineering"
+	fi
+	if (( VEC_ROOT_CUSTOM )) && (( ! VAULT_CUSTOM )); then
+		VAULT_DIR="$VEC_ROOT/Vaults/Work"
+	fi
+	LOCAL_BIN="$HOME/.local/bin"
+	HALCYON_CONFIG_DIR="$HOME/.config/halcyon"
+	MANIFEST_DIR="$ENGINEERING_DIR/logs/bootstrap"
+}
+
+print_change_plan() {
+	cat <<-EOF
+
+	===============================================================================
+	Operator laptop bootstrap v$VERSION — planned changes
+	===============================================================================
+
+	Mode:
+	  APPLY=$APPLY
+	  FORCE=$FORCE
+	  DO_INSTALL=$DO_INSTALL
+	  INSTALL_OBSIDIAN=$INSTALL_OBSIDIAN
+	  APPLY_SYSTEM_THEME=$APPLY_SYSTEM_THEME
+	  SET_VSCODE_USER_SETTINGS=$SET_VSCODE_USER_SETTINGS
+
+	Workspace roots:
+	  Vec root:     $VEC_ROOT
+	  Engineering:  $ENGINEERING_DIR
+	  Vault:        $VAULT_DIR
+
+	Managed configs/files:
+	  $HOME/.operator_aliases
+	  $HOME/.inputrc
+	  $HOME/.bashrc source lines
+	  $HALCYON_CONFIG_DIR/colors.env
+	  $HOME/.config/gtk-3.0/settings.ini
+	  $HOME/.config/gtk-4.0/settings.ini
+	  $HOME/.Xresources
+	  $HOME/.config/terminator/config
+	  $HOME/.config/matplotlib/stylelib/halcyon-dark.mplstyle
+	  $HOME/.config/Code/User/settings.json  [skipped if --no-vscode-user]
+	  $VAULT_DIR/.obsidian/*
+	  $VAULT_DIR/80-Templates/*
+
+	Not generated in v3.1.1:
+	  plot.py, vecbin, cleanup-downloads, csvpeek, operator-status,
+	  operator_python_template.py, operator_bash_template.sh, operator_matlab_template.m
+
+	Theme intent:
+	  soot -> amber/brass -> ember/copper -> signal-blue/moss -> warm bone
+	  Applied to shell prompt, ls/grep/GCC/man colors, Terminator, matplotlib,
+	  Obsidian CSS snippet, GTK preference files, and optional VS Code settings.
+
+	Terminal cockpit preferences:
+	  Prompt:       Vector-Halcyon |  <current path>:
+	  Terminator:   fullscreen, 80% transparency, Navigation / Execution / General panes
+	  Font:         $HALCYON_FONT_PANGO
+
+	EOF
+}
+
+# endregion S2
+
+# region S3: Package installation
+# ==============================================================================
+
+install_packages() {
+	if (( ! DO_INSTALL )); then
+		warn "Skipping package installation."
+		return 0
+	fi
+
+	if ! have_cmd apt; then
+		warn "apt not found; skipping package installation."
+		return 0
+	fi
+
+	local packages=(
+		build-essential git curl wget ca-certificates gnupg unzip zip tree
+		htop btop jq ripgrep fd-find fzf tmux terminator shellcheck
+		python3 python3-pip python3-venv python3-serial python3-tk
+		usbutils pciutils i2c-tools lm-sensors stress s-tui flatpak copyq
+		ncdu xclip xsel flameshot pavucontrol gnome-disk-utility moreutils rename
+	)
+
+	info "Installing core packages"
+	run sudo apt update
+	run sudo apt install -y "${packages[@]}"
+
+	if (( INSTALL_OBSIDIAN )); then
+		info "Installing Obsidian using Flatpak/Flathub"
+		run flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+		run flatpak install -y flathub md.obsidian.Obsidian
+	else
+		warn "Skipping Obsidian install."
+	fi
+}
+
+# endregion S3
+
+# region S4: Workspace directories
+# ==============================================================================
+
+setup_dirs() {
+	info "Creating workspace directories"
+
+	local dirs=(
+		"$VEC_ROOT"
+		"$LOCAL_BIN"
+		"$VEC_ROOT/Vaults"
+		"$VAULT_DIR"
+		"$ENGINEERING_DIR"
+		"$ENGINEERING_DIR/projects/active"
+		"$ENGINEERING_DIR/projects/archive"
+		"$ENGINEERING_DIR/python"
+		"$ENGINEERING_DIR/VSCode"
+		"$ENGINEERING_DIR/scripts"
+		"$ENGINEERING_DIR/testReports"
+		"$ENGINEERING_DIR/data/raw"
+		"$ENGINEERING_DIR/data/processed"
+		"$ENGINEERING_DIR/data/plots"
+		"$ENGINEERING_DIR/logs"
+		"$ENGINEERING_DIR/logs/bootstrap"
+		"$ENGINEERING_DIR/parts"
+		"$ENGINEERING_DIR/datasheets"
+		"$ENGINEERING_DIR/templates"
+		"$ENGINEERING_DIR/fieldNotes"
+		"$ENGINEERING_DIR/portfolio"
+		"$ENGINEERING_DIR/scratch"
+		"$ENGINEERING_DIR/interviewPrep"
+		"$ENGINEERING_DIR/reliability"
+		"$ENGINEERING_DIR/bench"
+		"$ENGINEERING_DIR/bench/sensorData"
+		"$ENGINEERING_DIR/bench/micropython"
+		"$ENGINEERING_DIR/hil_sil"
+		"$ENGINEERING_DIR/references"
+	)
+
+	local d
+	for d in "${dirs[@]}"; do
+		ensure_dir "$d"
+	done
+}
+
+# endregion S4
+
+# region S5: Halcyon colors and app/theme layer
+# ==============================================================================
+
+setup_halcyon_color_tokens() {
+	info "Writing Halcyon-dark color tokens"
+
+	write_file_stream "$HALCYON_CONFIG_DIR/colors.env" <<-EOF
+	# Halcyon dark palette for shell/scripts/tools.
+	# Source from Bash with:
+	#   [[ -f "\$HOME/.config/halcyon/colors.env" ]] && source "\$HOME/.config/halcyon/colors.env"
+
+	export HALCYON_THEME="halcyon-dark"
+
+	# Preferred UI/terminal typography.
+	export HALCYON_FONT_FAMILY="$HALCYON_FONT_FAMILY"
+	export HALCYON_FONT_SIZE="$HALCYON_FONT_SIZE"
+	export HALCYON_FONT_PANGO="$HALCYON_FONT_PANGO"
+	export HALCYON_TERMINATOR_TRANSPARENCY="$HALCYON_TERMINATOR_TRANSPARENCY"
+
+	# 20-color palette, ordered from soot/structure through signal/highlight.
+	export HALCYON_SOOT="$HALCYON_SOOT"
+	export HALCYON_OBSIDIAN_SHELL="$HALCYON_OBSIDIAN_SHELL"
+	export HALCYON_DARK_COCKPIT="$HALCYON_DARK_COCKPIT"
+	export HALCYON_COCKPIT_PANEL="$HALCYON_COCKPIT_PANEL"
+	export HALCYON_BURNT_UMBER="$HALCYON_BURNT_UMBER"
+	export HALCYON_OIL_BRONZE="$HALCYON_OIL_BRONZE"
+	export HALCYON_DIM_AMBER_GRID="$HALCYON_DIM_AMBER_GRID"
+	export HALCYON_TARNISHED_BRASS="$HALCYON_TARNISHED_BRASS"
+	export HALCYON_BRASS="$HALCYON_BRASS"
+	export HALCYON_FORGE_GOLD="$HALCYON_FORGE_GOLD"
+	export HALCYON_AMBER="$HALCYON_AMBER"
+	export HALCYON_EMBER_RUST="$HALCYON_EMBER_RUST"
+	export HALCYON_COPPER_ROSE="$HALCYON_COPPER_ROSE"
+	export HALCYON_SMOKED_ROSE="$HALCYON_SMOKED_ROSE"
+	export HALCYON_LOW_VIOLET="$HALCYON_LOW_VIOLET"
+	export HALCYON_TELEM_BLUE="$HALCYON_TELEM_BLUE"
+	export HALCYON_SIGNAL_BLUE="$HALCYON_SIGNAL_BLUE"
+	export HALCYON_OXI_MOSS="$HALCYON_OXI_MOSS"
+	export HALCYON_MOSS="$HALCYON_MOSS"
+	export HALCYON_WARM_BONE="$HALCYON_WARM_BONE"
+
+	# Compatibility aliases for older scripts/configs.
+	export HALCYON_BG="$HALCYON_BG"
+	export HALCYON_BG_ALT="$HALCYON_BG_ALT"
+	export HALCYON_FG="$HALCYON_FG"
+	export HALCYON_GOLD="$HALCYON_GOLD"
+	export HALCYON_RED="$HALCYON_RED"
+	export HALCYON_GREEN="$HALCYON_GREEN"
+	export HALCYON_BLUE="$HALCYON_BLUE"
+
+	# 256-color ANSI approximations used by Bash prompt, grep, ls, GCC, and man/less.
+	export HALCYON_ANSI_SOOT="232"
+	export HALCYON_ANSI_PANEL="235"
+	export HALCYON_ANSI_TEXT="230"
+	export HALCYON_ANSI_AMBER="214"
+	export HALCYON_ANSI_BRASS="172"
+	export HALCYON_ANSI_SIGNAL_BLUE="73"
+	export HALCYON_ANSI_MOSS="107"
+	export HALCYON_ANSI_RUST="166"
+	export HALCYON_ANSI_VIOLET="140"
+	EOF
+}
+
+setup_system_theme() {
+	info "Applying Halcyon-dark app/system preference layer"
+
+	write_file_stream "$HOME/.config/gtk-3.0/settings.ini" <<-EOF
+	[Settings]
+	gtk-application-prefer-dark-theme=1
+	gtk-theme-name=Mint-Y-Dark
+	gtk-icon-theme-name=Mint-Y-Sand
+	gtk-font-name=$HALCYON_FONT_PANGO
+	gtk-cursor-theme-size=24
+	EOF
+
+	write_file_stream "$HOME/.config/gtk-4.0/settings.ini" <<-EOF
+	[Settings]
+	gtk-application-prefer-dark-theme=1
+	gtk-theme-name=Mint-Y-Dark
+	gtk-icon-theme-name=Mint-Y-Sand
+	gtk-font-name=$HALCYON_FONT_PANGO
+	gtk-cursor-theme-size=24
+	EOF
+
+	write_file_stream "$HOME/.Xresources" <<-EOF
+	! Halcyon dark Xresources
+	*.background: $HALCYON_BG
+	*.foreground: $HALCYON_FG
+	*.cursorColor: $HALCYON_GOLD
+	*.font: xft:$HALCYON_FONT_FAMILY:size=$HALCYON_FONT_SIZE
+	*.color0:  $HALCYON_SOOT
+	*.color1:  $HALCYON_EMBER_RUST
+	*.color2:  $HALCYON_MOSS
+	*.color3:  $HALCYON_AMBER
+	*.color4:  $HALCYON_SIGNAL_BLUE
+	*.color5:  $HALCYON_SMOKED_ROSE
+	*.color6:  $HALCYON_OXI_MOSS
+	*.color7:  $HALCYON_WARM_BONE
+	*.color8:  $HALCYON_COCKPIT_PANEL
+	*.color9:  $HALCYON_COPPER_ROSE
+	*.color10: $HALCYON_OXI_MOSS
+	*.color11: $HALCYON_FORGE_GOLD
+	*.color12: $HALCYON_TELEM_BLUE
+	*.color13: $HALCYON_LOW_VIOLET
+	*.color14: $HALCYON_SIGNAL_BLUE
+	*.color15: #fff4df
+	EOF
+
+	if (( APPLY_SYSTEM_THEME )); then
+		if have_cmd gsettings; then
+			run_optional gsettings set org.gnome.desktop.interface color-scheme prefer-dark
+			run_optional gsettings set org.gnome.desktop.interface gtk-theme Mint-Y-Dark
+			run_optional gsettings set org.gnome.desktop.interface icon-theme Mint-Y-Sand
+			run_optional gsettings set org.cinnamon.desktop.interface gtk-theme Mint-Y-Dark
+			run_optional gsettings set org.cinnamon.desktop.interface icon-theme Mint-Y-Sand
+		else
+			warn "gsettings not found; wrote GTK config files only."
+		fi
+	else
+		warn "Skipping live system theme commands because --no-system-theme was set."
+	fi
+}
+
+setup_mplstyle() {
+	info "Creating matplotlib Halcyon-dark style"
+
+	write_file_stream "$HOME/.config/matplotlib/stylelib/halcyon-dark.mplstyle" <<-EOF
+	# halcyon-dark matplotlib style
+	# Use in Python with:
+	#   import matplotlib.pyplot as plt
+	#   plt.style.use('halcyon-dark')
+
+	figure.facecolor: $HALCYON_BG
+	axes.facecolor: $HALCYON_BG_ALT
+	axes.edgecolor: $HALCYON_BRASS
+	axes.labelcolor: $HALCYON_FG
+	axes.titlecolor: $HALCYON_GOLD
+	xtick.color: $HALCYON_FG
+	ytick.color: $HALCYON_FG
+	text.color: $HALCYON_FG
+	font.family: $HALCYON_FONT_FAMILY
+	font.size: $HALCYON_FONT_SIZE
+	grid.color: $HALCYON_DIM_AMBER_GRID
+	grid.alpha: 0.32
+	axes.grid: True
+	legend.facecolor: $HALCYON_OBSIDIAN_SHELL
+	legend.edgecolor: $HALCYON_BRASS
+	savefig.facecolor: $HALCYON_BG
+	savefig.edgecolor: $HALCYON_BG
+	lines.linewidth: 2.0
+	patch.edgecolor: $HALCYON_BG
+	image.cmap: inferno
+	axes.prop_cycle: cycler('color', ['$HALCYON_EMBER_RUST', '$HALCYON_AMBER', '$HALCYON_COPPER_ROSE', '$HALCYON_MOSS', '$HALCYON_SIGNAL_BLUE', '$HALCYON_LOW_VIOLET'])
+	EOF
+}
+
+# endregion S5
+
+# region S6: Shell helpers and Bash quality-of-life layer
+# ==============================================================================
+
+setup_shell() {
+	info "Creating shell helpers"
+
+	write_file_stream "$HOME/.operator_aliases" <<-'EOF'
+	# ~/.operator_aliases
+	# Generated by operator_laptop_bootstrap.
+	# Purpose: interactive shell behavior, prompt, aliases, and Halcyon colors.
+	# Safe to edit, but rerunning bootstrap with --force will back it up.
+
+	# region S0. Guardrails / paths
+	[[ -f "$HOME/.config/halcyon/colors.env" ]] && source "$HOME/.config/halcyon/colors.env"
+	stty -ixon 2>/dev/null || true
+
+	export VEC_ROOT="${VEC_ROOT:-$HOME/Vec}"
+	export ENGINEERING_DIR="${ENGINEERING_DIR:-$VEC_ROOT/Engineering}"
+	export VAULT_DIR="${VAULT_DIR:-$VEC_ROOT/Vaults/Work}"
+	export HALCYON_FONT_FAMILY="${HALCYON_FONT_FAMILY:-JetBrainsMono Nerd Font ExtraThin}"
+	export HALCYON_FONT_SIZE="${HALCYON_FONT_SIZE:-11}"
+	export HALCYON_FONT_PANGO="${HALCYON_FONT_PANGO:-${HALCYON_FONT_FAMILY} ${HALCYON_FONT_SIZE}}"
+
+	path_prepend() {
+		local dir="${1:?path_prepend requires a directory}"
+		[[ -d "$dir" ]] || return 0
+		case ":$PATH:" in
+			*":$dir:"*) ;;
+			*) export PATH="$dir:$PATH" ;;
+		esac
+	}
+
+	path_prepend "$HOME/.local/bin"
+	path_prepend "$HOME/bin"
+	path_prepend "$ENGINEERING_DIR/bin"
+	path_prepend "$ENGINEERING_DIR/scripts"
+
+	export EDITOR="${EDITOR:-vim}"
+	export VISUAL="${VISUAL:-$EDITOR}"
+	export PAGER="${PAGER:-less}"
+	export LESS="${LESS:--FRX}"
+	export PYTHONUNBUFFERED=1
+	export PYTHONDONTWRITEBYTECODE=1
+	# endregion S0
+
+	# region S1. History
+	export HISTSIZE=20000
+	export HISTFILESIZE=50000
+	export HISTCONTROL=ignoreboth:erasedups
+	export HISTTIMEFORMAT='%F %T  '
+	shopt -s histappend 2>/dev/null || true
+	__halcyon_history_sync='history -a; history -n'
+	if [[ -n "${PROMPT_COMMAND:-}" ]]; then
+		case ";${PROMPT_COMMAND};" in
+			*";${__halcyon_history_sync};"*) ;;
+			*) PROMPT_COMMAND="${__halcyon_history_sync}; ${PROMPT_COMMAND}" ;;
+		esac
+	else
+		PROMPT_COMMAND="${__halcyon_history_sync}"
+	fi
+	unset __halcyon_history_sync
+	# endregion S1
+
+	# region S2. Halcyon colors / prompt / terminal output
+	export HALCYON_SOOT="${HALCYON_SOOT:-#07090D}"
+	export HALCYON_OBSIDIAN_SHELL="${HALCYON_OBSIDIAN_SHELL:-#0B0D10}"
+	export HALCYON_DARK_COCKPIT="${HALCYON_DARK_COCKPIT:-#11151C}"
+	export HALCYON_COCKPIT_PANEL="${HALCYON_COCKPIT_PANEL:-#282829}"
+	export HALCYON_BURNT_UMBER="${HALCYON_BURNT_UMBER:-#1A1410}"
+	export HALCYON_OIL_BRONZE="${HALCYON_OIL_BRONZE:-#3A2A18}"
+	export HALCYON_DIM_AMBER_GRID="${HALCYON_DIM_AMBER_GRID:-#6B5A3A}"
+	export HALCYON_TARNISHED_BRASS="${HALCYON_TARNISHED_BRASS:-#7A653E}"
+	export HALCYON_WARM_BONE="${HALCYON_WARM_BONE:-#F2E8D5}"
+	export HALCYON_LOW_VIOLET="${HALCYON_LOW_VIOLET:-#A77BD4}"
+	export HALCYON_AMBER="${HALCYON_AMBER:-#FFBF00}"
+	export HALCYON_BRASS="${HALCYON_BRASS:-#B88746}"
+	export HALCYON_FORGE_GOLD="${HALCYON_FORGE_GOLD:-#D89A3D}"
+	export HALCYON_SIGNAL_BLUE="${HALCYON_SIGNAL_BLUE:-#76B7B2}"
+	export HALCYON_TELEM_BLUE="${HALCYON_TELEM_BLUE:-#4A7C8C}"
+	export HALCYON_OXI_MOSS="${HALCYON_OXI_MOSS:-#4F6F63}"
+	export HALCYON_MOSS="${HALCYON_MOSS:-#8FA37A}"
+	export HALCYON_EMBER_RUST="${HALCYON_EMBER_RUST:-#B7410E}"
+	export HALCYON_COPPER_ROSE="${HALCYON_COPPER_ROSE:-#C97C5D}"
+	export HALCYON_SMOKED_ROSE="${HALCYON_SMOKED_ROSE:-#7B4E57}"
+	export HALCYON_BG="${HALCYON_BG:-$HALCYON_SOOT}"
+	export HALCYON_BG_ALT="${HALCYON_BG_ALT:-$HALCYON_COCKPIT_PANEL}"
+	export HALCYON_FG="${HALCYON_FG:-$HALCYON_WARM_BONE}"
+	export HALCYON_GOLD="${HALCYON_GOLD:-$HALCYON_AMBER}"
+	export HALCYON_BLUE="${HALCYON_BLUE:-$HALCYON_SIGNAL_BLUE}"
+	export HALCYON_GREEN="${HALCYON_GREEN:-$HALCYON_MOSS}"
+	export HALCYON_RED="${HALCYON_RED:-$HALCYON_EMBER_RUST}"
+
+	export HALCYON_ANSI_TEXT="${HALCYON_ANSI_TEXT:-230}"
+	export HALCYON_ANSI_AMBER="${HALCYON_ANSI_AMBER:-214}"
+	export HALCYON_ANSI_BRASS="${HALCYON_ANSI_BRASS:-172}"
+	export HALCYON_ANSI_SIGNAL_BLUE="${HALCYON_ANSI_SIGNAL_BLUE:-73}"
+	export HALCYON_ANSI_MOSS="${HALCYON_ANSI_MOSS:-107}"
+	export HALCYON_ANSI_RUST="${HALCYON_ANSI_RUST:-166}"
+
+	__hc_reset='\[\e[0m\]'
+	__hc_text="\[\e[38;5;${HALCYON_ANSI_TEXT}m\]"
+	__hc_amber="\[\e[38;5;${HALCYON_ANSI_AMBER}m\]"
+	__hc_blue="\[\e[38;5;${HALCYON_ANSI_SIGNAL_BLUE}m\]"
+
+	# Visible prompt:
+	#   Vector-Halcyon |  <current path>:
+	# Bash expands \w at prompt-render time, so it always shows the current path.
+	PS1="${__hc_amber}Vector-Halcyon${__hc_text} |  ${__hc_blue}\w${__hc_text}:${__hc_reset} "
+
+	case "${TERM:-}" in
+		xterm*|rxvt*) PS1="\[\e]0;Vector-Halcyon | \w\a\]${PS1}" ;;
+	esac
+
+	if [[ -x /usr/bin/dircolors ]]; then
+		if [[ -r "$HOME/.dircolors" ]]; then
+			eval "$(dircolors -b "$HOME/.dircolors")"
+		else
+			eval "$(dircolors -b)"
+		fi
+	fi
+	export LS_COLORS="${LS_COLORS:-}:di=01;38;5;${HALCYON_ANSI_SIGNAL_BLUE}:ln=01;38;5;${HALCYON_ANSI_AMBER}:ex=01;38;5;${HALCYON_ANSI_MOSS}:*.sh=01;38;5;${HALCYON_ANSI_MOSS}:*.bash=01;38;5;${HALCYON_ANSI_MOSS}:*.py=01;38;5;${HALCYON_ANSI_SIGNAL_BLUE}:*.m=01;38;5;${HALCYON_ANSI_AMBER}:*.md=38;5;${HALCYON_ANSI_TEXT}:*.csv=38;5;${HALCYON_ANSI_BRASS}:*.json=38;5;${HALCYON_ANSI_BRASS}:*.log=38;5;${HALCYON_ANSI_RUST}:*.png=38;5;${HALCYON_ANSI_MOSS}:*.pdf=38;5;${HALCYON_ANSI_AMBER}:*.zip=38;5;${HALCYON_ANSI_RUST}"
+
+	alias ls='ls --color=auto'
+	alias grep='grep --color=auto'
+	alias fgrep='fgrep --color=auto'
+	alias egrep='egrep --color=auto'
+	export GREP_COLORS="ms=01;38;5;${HALCYON_ANSI_AMBER}:mc=01;38;5;${HALCYON_ANSI_AMBER}:fn=38;5;${HALCYON_ANSI_MOSS}:ln=38;5;${HALCYON_ANSI_SIGNAL_BLUE}:bn=38;5;${HALCYON_ANSI_BRASS}:se=38;5;${HALCYON_ANSI_RUST}"
+	export GCC_COLORS="error=01;38;5;${HALCYON_ANSI_RUST}:warning=01;38;5;${HALCYON_ANSI_AMBER}:note=01;38;5;${HALCYON_ANSI_SIGNAL_BLUE}:caret=01;38;5;${HALCYON_ANSI_MOSS}:locus=38;5;${HALCYON_ANSI_TEXT}:quote=38;5;${HALCYON_ANSI_BRASS}"
+	export LESS_TERMCAP_mb=$'\e[01;38;5;214m'
+	export LESS_TERMCAP_md=$'\e[01;38;5;214m'
+	export LESS_TERMCAP_me=$'\e[0m'
+	export LESS_TERMCAP_se=$'\e[0m'
+	export LESS_TERMCAP_so=$'\e[48;5;235;38;5;73m'
+	export LESS_TERMCAP_ue=$'\e[0m'
+	export LESS_TERMCAP_us=$'\e[04;38;5;107m'
+	unset __hc_reset __hc_text __hc_amber __hc_blue
+	# endregion S2
+
+	# region S3. Navigation and aliases
+	cd() {
+		builtin cd "$@" || return
+		ls -lrt
+	}
+
+	mkcd() {
+		local dir="${1:?usage: mkcd <dir>}"
+		mkdir -p "$dir" && cd "$dir"
+	}
+
+	up() {
+		local levels="${1:-1}"
+		local path="."
+		local i
+		for ((i = 0; i < levels; i++)); do path="$path/.."; done
+		cd "$path"
+	}
+
+	alias ll='ls -alF'
+	alias la='ls -A'
+	alias l='ls -CF'
+	alias lt='ls -lth'
+	alias ltr='ls -ltrh'
+	alias lsize='ls -lhS'
+	alias ..='cd ..'
+	alias ...='cd ../..'
+	alias ....='cd ../../..'
+	alias down='cd "$HOME/Downloads"'
+	alias vec='cd "$VEC_ROOT"'
+	alias eng='cd "$ENGINEERING_DIR"'
+	alias proj='cd "$ENGINEERING_DIR/projects/active"'
+	alias logs='cd "$ENGINEERING_DIR/logs"'
+	alias vault='cd "$VAULT_DIR"'
+	alias bench='cd "$ENGINEERING_DIR/bench"'
+	alias scratch='cd "$ENGINEERING_DIR/scratch"'
+
+	alias c='clear'
+	alias h='history'
+	alias hg='history | grep -i'
+	alias path='echo "$PATH" | tr ":" "\n"'
+	alias reload='source ~/.bashrc'
+	alias dfh='df -h'
+	alias mem='free -h'
+	alias mkdirp='mkdir -p'
+	alias chmodx='chmod +x'
+	alias sha='sha256sum'
+	alias please='sudo'
+	alias editalias='vim ~/.operator_aliases'
+	alias cp='cp -i'
+	alias mv='mv -i'
+	alias rm='rm -i'
+	alias rmdir='rm -ri'
+	alias cpv='cp -v'
+	alias mvv='mv -v'
+	alias untar='tar -xvf'
+	alias targz='tar -czvf'
+	alias ducks='du -h --max-depth=1 2>/dev/null | sort -h'
+	alias diskbig='du -ah . 2>/dev/null | sort -h | tail -n 30'
+
+	alias py='python3'
+	alias venv='python3 -m venv .venv && source .venv/bin/activate'
+	alias activate='source .venv/bin/activate'
+	alias pipup='python3 -m pip install --upgrade pip'
+	alias pyclean='find . -type d -name "__pycache__" -prune -exec rm -rf {} +'
+	alias findpy='find . -name "*.py"'
+	alias findsh='find . -name "*.sh"'
+	alias findcsv='find . -name "*.csv"'
+
+	alias gs='git status --short --branch'
+	alias ga='git add'
+	alias gc='git commit'
+	alias gcm='git commit -m'
+	alias gl='git log --oneline --graph --decorate --all -n 20'
+	alias gd='git diff'
+	alias gds='git diff --staged'
+	alias gp='git push'
+	alias gpl='git pull'
+
+	alias ports='ls -l /dev/ttyACM* /dev/ttyUSB* 2>/dev/null || true'
+	alias pyports='python3 -m serial.tools.list_ports'
+	alias acm='ls -l /dev/ttyACM* 2>/dev/null || true'
+	alias whoacm='lsof /dev/ttyACM0 2>/dev/null || true'
+	alias killacm='lsof -t /dev/ttyACM0 2>/dev/null | xargs -r kill'
+	alias nukeacm='lsof -t /dev/ttyACM0 2>/dev/null | xargs -r kill -9'
+	alias mp='mpremote connect /dev/ttyACM0'
+	alias mpls='mpremote connect /dev/ttyACM0 fs ls :/'
+	alias mpcatcfg='mpremote connect /dev/ttyACM0 fs cat :/run_config.py'
+	alias mpreset='mpremote connect /dev/ttyACM0 reset'
+	alias i2cscan='i2cdetect -y 1'
+	alias sensorscan='sensors'
+	alias stresswatch='watch -n 1 sensors'
+	alias cpuwatch='watch -n 1 "sensors && echo && free -h"'
+	# endregion S3
+
+	# region S4. Operator functions
+	mkproj() {
+		if [[ $# -lt 1 ]]; then echo "usage: mkproj <project-name>"; return 1; fi
+		local p="$ENGINEERING_DIR/projects/active/$1"
+		mkdir -p "$p"/{src,scripts,tests,config,data/raw,data/processed,data/synthetic,docs,notes,logs,output/figures,output/tables,output/reports,sandbox}
+		if [[ ! -f "$p/README.md" ]]; then
+			printf "# %s\n\n## Mission\n\n## System Under Test\n\n## Interfaces\n\n## Tests\n\n## Data / Evidence\n\n## Next Actions\n\n" "$1" > "$p/README.md"
+		fi
+		cd "$p" || return
+	}
+
+	todaylog() {
+		local d p
+		d="$(date +%Y-%m-%d)"
+		p="$ENGINEERING_DIR/logs/$d"
+		mkdir -p "$p"
+		if [[ ! -f "$p/operator_log.md" ]]; then
+			printf "# %s — Operator Log\n\n## Topline\n- Energy:\n- Focus:\n- Main mission:\n\n## Work Blocks\n| Time | Mission | Result |\n|---|---|---|\n| | | |\n\n## Notes / Signals\n- \n\n## Shutdown\n- What changed?\n- Next physical action?\n" "$d" > "$p/operator_log.md"
+		fi
+		cd "$p" || return
+	}
+
+	fieldnote() {
+		local name="${1:-note}"
+		local ts p
+		ts="$(date +%Y%m%d_%H%M%S)"
+		p="$ENGINEERING_DIR/fieldNotes/${ts}_${name}.md"
+		mkdir -p "$(dirname "$p")"
+		printf "# %s — %s\n\n## Observation\n- \n\n## Evidence\n- \n\n## Next check\n- \n" "$ts" "$name" > "$p"
+		${EDITOR:-vim} "$p"
+	}
+
+	deskreset() {
+		cat <<-'RESET'
+		Desk reset / cockpit reset:
+		[ ] Water visible
+		[ ] Meds handled / checked
+		[ ] One active notebook or file open
+		[ ] Chargers returned to home
+		[ ] Cups/trash cleared
+		[ ] One next physical action chosen
+		RESET
+	}
+
+	alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history | tail -n1 | sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+	# endregion S4
+	EOF
+
+	append_once "$HOME/.bashrc" "# Operator aliases" '[[ -f "$HOME/.operator_aliases" ]] && source "$HOME/.operator_aliases"'
+	append_once "$HOME/.bashrc" "# Halcyon color tokens" '[[ -f "$HOME/.config/halcyon/colors.env" ]] && source "$HOME/.config/halcyon/colors.env"'
+
+	write_file_stream "$HOME/.inputrc" <<-'EOF'
+	# ~/.inputrc
+	"\e[A": history-search-backward
+	"\e[B": history-search-forward
+	set completion-ignore-case on
+	set show-all-if-ambiguous on
+	set menu-complete-display-prefix on
+	EOF
+}
+
+# endregion S6
+
+# region S7: Terminal, VS Code, and Obsidian config
+# ==============================================================================
+
+setup_terminator() {
+	info "Creating Terminator Halcyon-dark cockpit layout"
+
+	write_file_stream "$HOME/.config/terminator/config" <<-EOF
+	[global_config]
+	title_transmit_bg_color = "$HALCYON_OIL_BRONZE"
+	title_inactive_bg_color = "$HALCYON_DARK_COCKPIT"
+	title_receive_bg_color = "$HALCYON_TARNISHED_BRASS"
+	inactive_color_offset = 0.85
+	suppress_multiple_term_dialog = True
+
+	[keybindings]
+	split_horiz = <Primary><Shift>e
+	split_vert = <Primary><Shift>o
+	close_term = <Primary><Shift>w
+	new_tab = <Primary><Shift>t
+	next_tab = <Primary>Page_Down
+	prev_tab = <Primary>Page_Up
+
+	[profiles]
+	[[default]]
+		background_color = "$HALCYON_BG"
+		background_darkness = $HALCYON_TERMINATOR_TRANSPARENCY
+		background_type = transparent
+		cursor_color = "$HALCYON_GOLD"
+		foreground_color = "$HALCYON_FG"
+		palette = "$HALCYON_SOOT:$HALCYON_EMBER_RUST:$HALCYON_MOSS:$HALCYON_AMBER:$HALCYON_SIGNAL_BLUE:$HALCYON_SMOKED_ROSE:$HALCYON_OXI_MOSS:$HALCYON_WARM_BONE:$HALCYON_COCKPIT_PANEL:$HALCYON_COPPER_ROSE:$HALCYON_OXI_MOSS:$HALCYON_FORGE_GOLD:$HALCYON_TELEM_BLUE:$HALCYON_LOW_VIOLET:$HALCYON_SIGNAL_BLUE:#fff4df"
+		font = $HALCYON_FONT_PANGO
+		use_system_font = False
+		scrollback_infinite = True
+		copy_on_selection = True
+
+	[layouts]
+	[[default]]
+		[[[window0]]]
+			type = Window
+			parent = ""
+			fullscreen = True
+			maximised = True
+		[[[root_vertical_split]]]
+			type = HPaned
+			parent = window0
+			position = 620
+		[[[navigation]]]
+			type = Terminal
+			parent = root_vertical_split
+			profile = default
+			title = Navigation
+		[[[right_horizontal_split]]]
+			type = VPaned
+			parent = root_vertical_split
+			position = 480
+		[[[execution]]]
+			type = Terminal
+			parent = right_horizontal_split
+			profile = default
+			title = Execution
+		[[[general]]]
+			type = Terminal
+			parent = right_horizontal_split
+			profile = default
+			title = General
+
+	[plugins]
+	EOF
+}
+
+setup_vscode() {
+	info "Creating VS Code Halcyon-dark recommendations"
+
+	local vscode_settings
+	vscode_settings="$(cat <<-EOF
+	{
+	  "workbench.colorTheme": "Default Dark Modern",
+	  "window.autoDetectColorScheme": true,
+	  "workbench.preferredDarkColorTheme": "Default Dark Modern",
+	  "editor.fontFamily": "'JetBrainsMono Nerd Font ExtraThin', 'JetBrains Mono', monospace",
+	  "editor.fontSize": 11,
+	  "editor.fontWeight": "200",
+	  "terminal.integrated.fontFamily": "JetBrainsMono Nerd Font ExtraThin",
+	  "terminal.integrated.fontSize": 11,
+	  "editor.rulers": [88, 100],
+	  "editor.formatOnSave": false,
+	  "editor.minimap.enabled": false,
+	  "editor.bracketPairColorization.enabled": true,
+	  "editor.guides.bracketPairs": true,
+	  "files.trimTrailingWhitespace": true,
+	  "files.insertFinalNewline": true,
+	  "terminal.integrated.defaultProfile.linux": "bash",
+	  "terminal.integrated.copyOnSelection": true,
+	  "terminal.integrated.minimumContrastRatio": 4.5,
+	  "workbench.colorCustomizations": {
+	    "terminal.background": "$HALCYON_BG",
+	    "terminal.foreground": "$HALCYON_FG",
+	    "terminalCursor.foreground": "$HALCYON_GOLD",
+	    "activityBar.background": "$HALCYON_DARK_COCKPIT",
+	    "sideBar.background": "$HALCYON_OBSIDIAN_SHELL",
+	    "editor.background": "$HALCYON_BG",
+	    "editor.foreground": "$HALCYON_FG",
+	    "statusBar.background": "$HALCYON_OIL_BRONZE",
+	    "statusBar.foreground": "$HALCYON_WARM_BONE"
+	  }
+	}
+	EOF
+	)"
+
+	write_file "$ENGINEERING_DIR/VSCode/settings.halcyon-dark.json" "$vscode_settings"$'\n'
+
+	if (( SET_VSCODE_USER_SETTINGS )); then
+		write_file "$HOME/.config/Code/User/settings.json" "$vscode_settings"$'\n'
+	else
+		warn "Skipping VS Code user settings because --no-vscode-user was set."
+	fi
+}
+
+setup_vault() {
+	info "Creating Obsidian work vault"
+
+	local dirs=(
+		00-Inbox 10-Daily 20-Projects 30-Systems 40-Test-Plans 45-VV-Matrices
+		50-Debug-Logs 60-Meetings 70-References 80-Templates 90-Archive
+		Attachments .obsidian .obsidian/snippets
+	)
+	local d
+	for d in "${dirs[@]}"; do
+		ensure_dir "$VAULT_DIR/$d"
+	done
+
+	write_file_stream "$VAULT_DIR/README.md" <<-'EOF'
+	# Work Operator Vault
+
+	Purpose: capture engineering notes, meetings, debug trails, project decisions, test plans, V&V matrices, and reusable systems knowledge.
+
+	| Folder | Use |
+	|---|---|
+	| 00-Inbox | Fast capture before sorting |
+	| 10-Daily | Daily plans, shutdown notes, work log |
+	| 20-Projects | Project home notes and active work |
+	| 30-Systems | System definitions and interfaces |
+	| 40-Test-Plans | Verification plans and procedures |
+	| 45-VV-Matrices | Requirements, evidence, acceptance criteria |
+	| 50-Debug-Logs | Ambiguous failures and root cause notes |
+	| 60-Meetings | Meeting notes and action items |
+	| 70-References | Concepts, datasheets, standards |
+	| 80-Templates | Reusable note templates |
+	| 90-Archive | Completed or stale notes |
+	EOF
+
+	write_file_stream "$VAULT_DIR/80-Templates/Daily Note.md" <<-'EOF'
+	# {{date}} — Daily Operator Log
+
+	## Topline
+	- Energy:
+	- Focus:
+	- Main mission:
+	- Constraint / risk:
+
+	## Pre-flight
+	- [ ] Calendar checked
+	- [ ] Critical messages checked
+	- [ ] One priority chosen
+	- [ ] Water / food accounted for
+
+	## Work Blocks
+	| Time | Mission | Result |
+	|---|---|---|
+	| | | |
+
+	## Shutdown
+	- What changed today?
+	- What is the next physical action?
+	- What can wait?
+	EOF
+
+	write_file_stream "$VAULT_DIR/80-Templates/Project Home.md" <<-'EOF'
+	# Project — <Name>
+
+	## Mission
+	<What are we trying to make true?>
+
+	## System Under Test
+	| Level | Element |
+	|---|---|
+	| Main System | |
+
+	## Success Criteria
+	| ID | Criterion | Verification |
+	|---|---|---|
+	| SC-001 | | |
+
+	## Interfaces
+	| Interface | From | To | Flow Type | Notes |
+	|---|---|---|---|---|
+	| | | | Data / Power / Mechanical / Thermal / RF / Human | |
+
+	## Risks / Assumptions
+	| ID | Type | Statement | How to test / retire |
+	|---|---|---|---|
+	| ASM-001 | Assumption | | |
+
+	## Next Actions
+	- [ ]
+	EOF
+
+	write_file_stream "$VAULT_DIR/80-Templates/VV Matrix.md" <<-'EOF'
+	# V&V Matrix — <System / Feature>
+
+	| ID | Requirement / Claim | Method | Evidence | Acceptance Criteria | Status | Notes |
+	|---|---|---|---|---|---|---|
+	| VV-001 | | Inspection / Analysis / Test / Demo | | | Draft | |
+
+	## Evidence Standard
+	- What signal would confirm this?
+	- What signal would falsify this?
+	- What is the minimum evidence needed to trust the result?
+	EOF
+
+	write_file_stream "$VAULT_DIR/80-Templates/Debug Log.md" <<-'EOF'
+	# Debug Log — <Issue / Symptom>
+
+	## Situation
+	-
+
+	## Expected Behavior
+	-
+
+	## Observed Behavior
+	-
+
+	## Evidence
+	| Evidence | Source | Timestamp / Link |
+	|---|---|---|
+	| | | |
+
+	## Hypotheses
+	| ID | Hypothesis | Test | Result |
+	|---|---|---|---|
+	| H1 | | | |
+
+	## Root Cause / Narrowed Cause
+	-
+
+	## Fix / Mitigation
+	-
+
+	## Prevention
+	- Regression test:
+	- Monitor / alert:
+	- Documentation / playbook:
+	EOF
+
+	write_file_stream "$VAULT_DIR/80-Templates/Test Plan.md" <<-'EOF'
+	# Test Plan — <Test Name>
+
+	## Objective
+	<What question does this test answer?>
+
+	## Setup
+	| Item | Value |
+	|---|---|
+	| Hardware | |
+	| Firmware / Software | |
+	| Environment | |
+	| Instrumentation | |
+
+	## Procedure
+	1.
+	2.
+	3.
+
+	## Data to Log
+	| Signal | Units | Rate | Source |
+	|---|---:|---:|---|
+	| | | | |
+
+	## Pass / Fail Criteria
+	| Criterion | Pass Threshold |
+	|---|---|
+	| | |
+
+	## Conclusion
+	<What did we learn? What changes next?>
+	EOF
+
+	write_file_stream "$VAULT_DIR/.obsidian/app.json" <<-'EOF'
+	{
+	  "attachmentFolderPath": "Attachments",
+	  "alwaysUpdateLinks": true,
+	  "newFileLocation": "folder",
+	  "newFileFolderPath": "00-Inbox",
+	  "cssTheme": ""
+	}
+	EOF
+
+	write_file_stream "$VAULT_DIR/.obsidian/templates.json" <<-'EOF'
+	{
+	  "folder": "80-Templates",
+	  "dateFormat": "YYYY-MM-DD",
+	  "timeFormat": "HH:mm"
+	}
+	EOF
+
+	write_file_stream "$VAULT_DIR/.obsidian/daily-notes.json" <<-'EOF'
+	{
+	  "folder": "10-Daily",
+	  "format": "YYYY-MM-DD",
+	  "template": "80-Templates/Daily Note.md"
+	}
+	EOF
+
+	write_file_stream "$VAULT_DIR/.obsidian/appearance.json" <<-'EOF'
+	{
+	  "theme": "obsidian",
+	  "cssTheme": "",
+	  "enabledCssSnippets": ["halcyon-dark"]
+	}
+	EOF
+
+	write_file_stream "$VAULT_DIR/.obsidian/snippets/halcyon-dark.css" <<-EOF
+	:root {
+	  --font-interface: "$HALCYON_FONT_FAMILY";
+	  --font-text: "$HALCYON_FONT_FAMILY";
+	  --font-monospace: "$HALCYON_FONT_FAMILY";
+	  --font-ui-smaller: ${HALCYON_FONT_SIZE}px;
+	  --font-ui-small: ${HALCYON_FONT_SIZE}px;
+	  --font-ui-medium: ${HALCYON_FONT_SIZE}px;
+	  --font-ui-large: ${HALCYON_FONT_SIZE}px;
+	  --background-primary: $HALCYON_BG;
+	  --background-secondary: $HALCYON_BG_ALT;
+	  --text-normal: $HALCYON_FG;
+	  --text-muted: $HALCYON_LOW_VIOLET;
+	  --interactive-accent: $HALCYON_GOLD;
+	  --text-accent: $HALCYON_GOLD;
+	  --code-background: $HALCYON_OBSIDIAN_SHELL;
+	  --blockquote-border-color: $HALCYON_BRASS;
+	}
+	EOF
+}
+
+# endregion S7
+
+# region S8: Groups, manifest, and completion text
+# ==============================================================================
+
+setup_groups() {
+	info "Checking useful hardware groups"
+	local groups=(dialout plugdev i2c)
+	local g
+	for g in "${groups[@]}"; do
+		if getent group "$g" >/dev/null 2>&1; then
+			run_optional sudo usermod -aG "$g" "$USER"
+		else
+			debug "Group not present: $g"
+		fi
+	done
+	warn "Group membership changes may require log out/in."
+}
+
+write_manifest() {
+	info "Writing bootstrap manifest"
+	write_file_stream "$MANIFEST_DIR/bootstrap_${RUN_ID}.txt" <<-EOF
+	operator_laptop_bootstrap
+	version=$VERSION
+	author=$AUTHOR
+	run_id=$RUN_ID
+	timestamp=$(timestamp)
+	script_path=$SCRIPT_PATH
+	script_dir=$SCRIPT_DIR
+	apply=$APPLY
+	force=$FORCE
+	vec_root=$VEC_ROOT
+	engineering_dir=$ENGINEERING_DIR
+	vault_dir=$VAULT_DIR
+	local_bin=$LOCAL_BIN
+	halcyon_config_dir=$HALCYON_CONFIG_DIR
+	wrote_embedded_subscripts=false
+	notes=Version 3.1.0 intentionally does not generate plot.py/templates/helper scripts.
+	EOF
+}
+
+print_next() {
+	cat <<-EOF
+
+	===============================================================================
+	Bootstrap v$VERSION complete
+	===============================================================================
+
+	Next steps:
+	  source ~/.bashrc
+	  terminator
+
+	Terminator should open fullscreen with three panes:
+	  left = Navigation, right top = Execution, right bottom = General
+	  transparency = 80%, font = $HALCYON_FONT_PANGO
+
+	Useful commands after sourcing ~/.bashrc:
+	  cd <dir>             # change dir, then list contents with ls -lrt
+	  eng                  # jump to engineering workspace
+	  proj                 # active projects
+	  mkproj <name>        # create a structured project
+	  todaylog             # open today's log folder
+	  fieldnote <name>     # create a quick field note
+
+	Standalone scripts:
+	  v3.1.1 does not write plot.py/templates/helper scripts.
+	  Put your v3.0.0 standalone files in:
+	    $ENGINEERING_DIR/scripts
+	  They will be available automatically after ~/.operator_aliases adds that path.
+
+	Obsidian:
+	  Open folder as vault -> $VAULT_DIR
+	  Enable CSS snippets -> halcyon-dark
+	  Confirm Templates folder = 80-Templates
+	  Confirm Daily Notes folder = 10-Daily
+
+	Optional Git identity:
+	  git config --global user.name "V Halcyon"
+	  git config --global user.email "<work-or-personal-email>"
+	  git config --global init.defaultBranch main
+
+	EOF
+
+	if (( ! APPLY )); then
+		echo "Dry run only. Apply with: bash $SCRIPT_NAME --apply"
+	fi
+}
+
+cleanup() {
+	local status=$?
+	if (( status != 0 )); then
+		warn "Script exited with status $status"
+	fi
+}
+trap cleanup EXIT
+
+# endregion S8
+
+# region S9: Main workflow
+# ==============================================================================
+
+main() {
+	parse_args "$@"
+	info "Starting operator laptop bootstrap v$VERSION"
+	print_change_plan
+	install_packages
+	setup_dirs
+	setup_halcyon_color_tokens
+	setup_system_theme
+	setup_mplstyle
+	setup_shell
+	setup_terminator
+	setup_vscode
+	setup_vault
+	setup_groups
+	write_manifest
+	print_next
+}
+
+main "$@"
+
+# endregion S9

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+IFS=
+
+declare -a test_array=("A-000" "A-001" "A-002")
+
+for i in "${!test_array[@]}"; do
+    echo "${test_array[i]}"
+done
+

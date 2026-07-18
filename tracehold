@@ -1671,12 +1671,25 @@ validate_config() {
 
 	# validate 'add' workflow
     if (( COMMANDS[ADD] )); then
+<<<<<<< HEAD
         (( WAS_SET[FILE] )) || hardstop "Input --file required" "$EX_USAGE"
         [[ -f "${INPUT[FILE]}" ]] || hardstop "${INPUT[FILE]} is not a regular file" "$EX_DATAERR"
         (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
 
         case "${INPUT[TYPE]}" in
             raw|photo|log|other) return 0;;
+=======
+		assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+        assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest.txt"
+
+		(( WAS_SET[FILE] )) || hardstop "Input --file required" "$EX_USAGE"
+        (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
+		assert_file_exists "${INPUT[FILE]}"
+
+        case "${INPUT[TYPE]}" in
+            raw|photo|log|note) return 0;;
+>>>>>>> 522458d (Misc small changes for better self-test)
             *) hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or other" "$EX_IOERR" ;;
         esac
     fi
@@ -1713,7 +1726,11 @@ run_workflow() {
     ensure_dir "${INPUT[OUTPUT_DIR]}/logs"
     ensure_dir "${INPUT[OUTPUT_DIR]}/artifacts"
 
+<<<<<<< HEAD
     make_run_manifest "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+=======
+    make_run_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_${RUN_ID}.txt"
+>>>>>>> 522458d (Misc small changes for better self-test)
 
     if (( COMMANDS[NEW] )); then
 		debug "Case_ID set: ${INPUT[CASE]}"
@@ -1747,18 +1764,28 @@ run_workflow() {
 
     if (( COMMANDS[ADD] )); then
 
+<<<<<<< HEAD
         assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
         assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+=======
+>>>>>>> 522458d (Misc small changes for better self-test)
 
         debug "Adding ${INPUT[TYPE]} file: ${INPUT[FILE]} to ${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
 
         if [[ -f "${INPUT[FILE]}" && -e "${INPUT[FILE]}" ]]; then
 
             case "${INPUT[TYPE]}" in
+<<<<<<< HEAD
                 raw) ;;
                 photo)  ;;
                 log)  ;;
                 note) ;;
+=======
+                raw) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/raw";;
+                photo) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/photos";;
+                log)  cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/logs";;
+                note) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/operator_notes";;
+>>>>>>> 522458d (Misc small changes for better self-test)
                 *) warn "Unknown file type. Available: 'raw','photo','log','note'" ;;
             esac
         fi
@@ -1777,7 +1804,11 @@ run_workflow() {
         debug "${COMMANDS[BUNDLE]}"
     fi
 
+<<<<<<< HEAD
     write_summary "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt" "ok"
+=======
+    write_summary "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/summary_${RUN_ID}.txt" "ok"
+>>>>>>> 522458d (Misc small changes for better self-test)
     log "tracehold: workflow complete"
 }
 
@@ -1874,8 +1905,13 @@ run_self_test() {
 
 		validate_config
 		run_workflow
+<<<<<<< HEAD
 		assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
 		assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
+=======
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_${RUN_ID}.txt"
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/summary_${RUN_ID}.txt"
+>>>>>>> 522458d (Misc small changes for better self-test)
 
 	done
 
