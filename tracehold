@@ -84,6 +84,7 @@ declare -a ASSETS=()
 declare -a SITES=()
 declare -a OWNERS=()
 declare -a RECENT_CHANGES=()
+declare -a FILES=()
 
 # --- Input defaults ----------------------------------------------------------
 
@@ -1072,321 +1073,291 @@ write_summary() {
 # --- Usage text --------------------------------------------------------------
 
 usage() {
-    cat <<-USAGE
-	# ┌──────────────────────────────────────────────────────────────┐
-	# │                         V / H                                │
-	# │_                      VEC HALCYON                           _│
-	#                     tracehold v${VERSION}
-	# │-         OBSERVE • VALIDATE • DEBUG • PROTECT               -│
-	# └──────────────────────────────────────────────────────────────┘
-
-	Turn an ambiguous field problem into a timestamped,
-	integrity-conscious engineering case file.
-
-	Usage:
-		${SCRIPT_NAME} COMMAND [options]
-
-	Commands:
-		new
-			Create a new investigation case and its initial artifacts.
-
-		add
-			Add evidence, logs, photographs, notes, or other files
-			to an existing case.
-
-		collect
-			Collect system or environment data directly into a case.
-
-		verify
-			Verify case structure, evidence integrity, and checksums.
-
-		bundle
-			Package a case into a portable .tar.gz archive.
-
-
-	────────────────────────────────────────────────────────────────
-	NEW CASE
-	────────────────────────────────────────────────────────────────
-
-	Create a new case under:
-
-		${INPUT[OUTPUT_DIR]}/{$CASE_PREFIX}_<timestamp>_<title>
-
-	Required:
-		--title STRING
-			Short investigation title used in the generated case ID.
-
-		--description STRING
-			Concise description of the observed problem or symptom.
-
-		--severity LEVEL
-			Initial priority classification, such as P0 through P4.
-
-		--asset ID [ID ...]
-			One or more affected vehicle, device, or system identifiers.
-
-	Recommended:
-		--site ID [ID ...]
-			One or more affected site or operating-location identifiers.
-
-		--reported-by NAME
-			Person, team, customer, operator, or system that reported
-			the issue.
-
-		--owner NAME [NAME ...]
-			One or more engineers or teams responsible for the investigation.
-
-		--first-observed UTC
-			Earliest known observation time.
-
-		--last-observed UTC
-			Most recent known observation time.
-
-		--operational-impact STRING
-			Known operational consequence or credible risk.
-
-		--affected-scope STRING
-			Known affected fleet, asset, site, version, or population.
-
-		--recent-change STRING [STRING ...]
-			One or more recent software, firmware, hardware, configuration,
-			network, procedural, or environmental changes. Quote values
-			that contain spaces.
-
-	Optional triage state:
-		--status STRING
-			Current operational or investigation state.
-
-		--repro-status STRING
-			Reproduction state, such as:
-				not-attempted
-				not-reproduced
-				intermittent
-				reproduced
-
-		--containment-status STRING
-			Current containment action or disposition.
-
-		--triage-confidence LEVEL
-			Confidence in the current triage assessment, such as:
-				low
-				medium
-				high
-
-		--profile NAME
-			Collection or analysis profile to apply.
-
-			Planned profiles:
-				default
-				general
-				bash
-				python
-				git
-
-
-	Example:
-		${SCRIPT_NAME} new \\
-			--title "intermittent_link_loss" \\
-			--description "Vehicle loses command link during climb" \\
-			--severity P1 \\
-			--asset AV-042 \\
-			--site SAC-01 \\
-			--reported-by "Flight Operations" \\
-			--owner "V Halcyon" \\
-			--operational-impact "Mission abort and temporary grounding" \\
-			--affected-scope "One vehicle; fleet scope unknown" \\
-			--recent-change "Radio firmware updated before first event" \\
-			--profile general \\
-			--apply
-
-	New-case behavior:
-		Creates the case directory structure and initial artifacts,
-		including:
-
-			manifest/
-				case_manifest.txt
-				environment.txt
-				software_versions.txt
-				checksums.sha256
-
-			evidence/
-				raw/
-				photos/
-				logs/
-				operator_notes/
-
-			derived/
-				timelines/
-				extracts/
-				figures/
-
-			commands/
-				collection.log
-				replay.sh
-
-			reports/
-				initial_triage.md
-				handoff.md
-
-
-	────────────────────────────────────────────────────────────────
-	ADD EVIDENCE
-	────────────────────────────────────────────────────────────────
-
-	Add a file to an existing case.
-
-	Required:
-		--case CASE_ID
-			Existing case identifier.
-
-		--file PATH
-			Path to the file being added.
-
-		--type TYPE
-			Evidence classification.
-
-			Available types:
-				raw
-				photo
-				log
-				note
-
-	Example:
-		${SCRIPT_NAME} add \\
-			--case GC_20260715_184500_UTC_link_loss \\
-			--file ./vehicle.log \\
-			--type log \\
-			--apply
-
-
-	────────────────────────────────────────────────────────────────
-	COLLECT
-	────────────────────────────────────────────────────────────────
-
-	Collect data directly into an existing case.
-
-	Required:
-		--case CASE_ID
-			Existing case identifier.
-
-		--profile NAME
-			Collection profile to execute.
-
-	Example:
-		${SCRIPT_NAME} collect \\
-			--case GC_20260715_184500_UTC_link_loss \\
-			--profile general \\
-			--apply
-
-
-	────────────────────────────────────────────────────────────────
-	VERIFY
-	────────────────────────────────────────────────────────────────
-
-	Validate case structure, required artifacts, and evidence integrity.
-
-	Required:
-		--case CASE_ID
-			Existing case identifier.
-
-	Example:
-		${SCRIPT_NAME} verify \\
-			--case GC_20260715_184500_UTC_link_loss
-
-
-	────────────────────────────────────────────────────────────────
-	BUNDLE
-	────────────────────────────────────────────────────────────────
-
-	Package an existing case into a portable .tar.gz archive.
-
-	Required:
-		--case CASE_ID
-			Existing case identifier.
-
-	Example:
-		${SCRIPT_NAME} bundle \\
-			--case GC_20260715_184500_UTC_link_loss \\
-			--apply
-
-
-	────────────────────────────────────────────────────────────────
-	PATH AND OUTPUT OPTIONS
-	────────────────────────────────────────────────────────────────
-
-		--case CASE_ID
-			Select an existing case.
-
-		--output-dir DIR
-			Override the default case-storage directory.
-
-			Default:
-				${INPUT[OUTPUT_DIR]}
-
-
-	────────────────────────────────────────────────────────────────
-	EXECUTION OPTIONS
-	────────────────────────────────────────────────────────────────
-
+    local banner="TRACEHOLD v${VERSION}"
+    local banner_width=70
+    local banner_left=$(( (banner_width - ${#banner}) / 2 ))
+    local banner_right=$(( banner_width - ${#banner} - banner_left ))
+
+    cat <<'USAGE'
+┌──────────────────────────────────────────────────────────────────────┐
+│                              V / H                                   │
+USAGE
+	printf '│%*s%s%*s│\n' "$banner_left" '' "$banner" "$banner_right" ''
+	cat <<'USAGE'
+│             OBSERVE • VALIDATE • DEBUG • PROTECT                     │
+└──────────────────────────────────────────────────────────────────────┘
+
+Turn an ambiguous field problem into a timestamped, integrity-conscious
+engineering case file.
+
+Hold the evidence. Keep the context. Find the truth.
+
+USAGE
+	cat <<'USAGE'
+Usage:
+	tracehold COMMAND [OPTIONS]
+
+Exactly one command is required unless --help, --version, or --self-test is
+used.
+
+Commands:
+	new       Create a case directory and initial triage artifacts.
+	add       Copy one evidence file into an existing case. Experimental.
+	collect   Collection-profile scaffold; collection is not implemented yet.
+	verify    Verification scaffold; integrity checks are not implemented yet.
+	bundle    Archive scaffold; .tar.gz creation is not implemented yet.
+
+Command syntax:
+	tracehold new REQUIRED_OPTIONS [CASE_OPTIONS] [EXECUTION_OPTIONS]
+	tracehold add --case CASE_ID --file PATH --type TYPE [COMMON_OPTIONS]
+	tracehold collect --case CASE_ID [--profile NAME] [COMMON_OPTIONS]
+	tracehold verify --case CASE_ID [COMMON_OPTIONS]
+	tracehold bundle --case CASE_ID [COMMON_OPTIONS]
+
+────────────────────────────────────────────────────────────────────────
+NEW CASE
+────────────────────────────────────────────────────────────────────────
+
+Required:
+	--title SLUG
+		Short case title appended directly to the generated case ID.
+		Use a filesystem-safe slug such as intermittent_link_loss; title
+		sanitization is not implemented.
+
+	--description STRING
+		Concise description of the directly observed problem or symptom.
+
+	--severity P0|P1|P2|P3|P4
+		Initial priority classification.
+
+	--asset ID [ID ...]
+		One or more affected asset, vehicle, device, or system identifiers.
+
+Optional case context:
+	--site ID [ID ...]
+		One or more affected sites or operating locations.
+
+	--reported-by STRING
+		Person, team, operator, customer, or system that reported the issue.
+
+	--owner STRING [STRING ...]
+		One or more investigation owners. Quote owner names containing spaces.
+
+	--first-observed STRING
+		Earliest known observation time. UTC ISO 8601 is recommended.
+
+	--last-observed STRING
+		Most recent known observation time. UTC ISO 8601 is recommended.
+
+	--operational-impact STRING
+		Actual operational consequence or credible risk.
+
+	--affected-scope STRING
+		Known affected asset, fleet, site, version, or population.
+
+	--recent-change STRING [STRING ...]
+		One or more recent software, firmware, hardware, configuration,
+		network, procedural, or environmental changes.
+
+	--status STRING
+		Current investigation or operational state.
+
+	--repro-status STRING
+		Current reproduction state. Values are recorded as supplied; common
+		values include not-attempted, not-reproduced, intermittent, and
+		reproduced.
+
+	--containment-status STRING
+		Current containment action, restriction, or disposition.
+
+	--triage-confidence STRING
+		Confidence in the current assessment. Values are recorded as supplied;
+		low, medium, and high are conventional choices.
+
+	--profile NAME
+		Collection or analysis profile name. The current default is default.
+		Profile execution is not implemented yet.
+
+Generated case ID:
+USAGE
+	printf '    %s_<YYYYMMDD_HHMMSS_UTC>_<title>\n' "${CASE_PREFIX}"
+	cat <<'USAGE'
+
+Variadic-option rule:
+	--asset, --site, --owner, and --recent-change consume every following
+	argument until the next option beginning with "-". Quote any single value
+	that contains spaces.
+
+Example:
+	tracehold new \
+		--title intermittent_link_loss \
+		--description "Vehicle loses command link during climb" \
+		--severity P1 \
+		--asset AV-042 AV-043 \
+		--site SAC-01 \
+		--reported-by "Flight Operations" \
+		--owner "V Halcyon" "RF Engineering" \
+		--first-observed "2026-07-18T04:12:00Z" \
+		--operational-impact "Mission abort and temporary grounding" \
+		--affected-scope "Two vehicles; fleet scope unknown" \
+		--recent-change "Radio firmware updated" "Site antenna replaced" \
+		--profile general \
 		--apply
-			Perform filesystem changes and execute commands.
 
-		--dry-run
-			Print intended actions without changing anything.
-			This is the default behavior.
+────────────────────────────────────────────────────────────────────────
+ADD EVIDENCE — EXPERIMENTAL
+────────────────────────────────────────────────────────────────────────
 
-		--force
-			Replace generated files after preserving backups.
+Required:
+	--case CASE_ID
+		Existing case directory name beneath the selected output directory.
 
-		-v, --verbose
-			Enable detailed diagnostic output.
+	--file PATH
+		One existing regular file to copy.
 
-		--self-test
-			Run the built-in smoke test using a temporary directory.
+	--type raw|photo|log|note
+		Destination evidence class:
+			raw    -> evidence/raw/
+			photo  -> evidence/photos/
+			log    -> evidence/logs/
+			note   -> evidence/operator_notes/
 
-		--version
-			Print the current tracehold version.
+Example:
+	tracehold add \
+		--case TH_20260718_041200_UTC_intermittent_link_loss \
+		--file ./vehicle.log \
+		--type log \
+		--apply
 
-		-h, --help
-			Show this help text.
+Important v1.1.0 limitation:
+	The add workflow is not yet safe for production evidence. Its current
+	manifest validation is tied to the new invocation's run ID, and its copy
+	operation is not routed through the dry-run helper. Do not rely on dry-run
+	protection for add until those issues are corrected.
 
+────────────────────────────────────────────────────────────────────────
+COLLECT / VERIFY / BUNDLE — SCAFFOLDED
+────────────────────────────────────────────────────────────────────────
 
-	────────────────────────────────────────────────────────────────
-	GENERAL EXAMPLES
-	────────────────────────────────────────────────────────────────
+collect:
+	tracehold collect --case CASE_ID [--profile NAME] [--apply]
 
-	Preview creation without changing the filesystem:
+verify:
+	tracehold verify --case CASE_ID [--apply]
 
-		${SCRIPT_NAME} new \\
-			--title "gps_quality_degradation" \\
-			--description "Position estimate becomes unstable near Site 04" \\
-			--severity P2 \\
-			--asset AV-017
+bundle:
+	tracehold bundle --case CASE_ID [--apply]
 
-	Create the case:
+These commands currently validate the case selection and participate in run
+manifest/summary generation. They do not yet collect evidence, verify checksums,
+or create an archive.
 
-		${SCRIPT_NAME} new \\
-			--title "gps_quality_degradation" \\
-			--description "Position estimate becomes unstable near Site 04" \\
-			--severity P2 \\
-			--asset AV-017 \\
-			--site SITE-04 \\
-			--apply
+────────────────────────────────────────────────────────────────────────
+COMMON PATH OPTIONS
+────────────────────────────────────────────────────────────────────────
 
-	Run with verbose diagnostics:
+	--case CASE_ID
+		Select an existing case. Invalid with new.
 
-		${SCRIPT_NAME} new \\
-			--title "gps_quality_degradation" \\
-			--description "Position estimate becomes unstable near Site 04" \\
-			--severity P2 \\
-			--asset AV-017 \\
-			--apply \\
-			--verbose
+	--output-dir DIR
+		Override the case-storage root for this invocation.
 
+Current default when the script is named tracehold.sh:
+USAGE
+	printf '    %s\n' "${INPUT[OUTPUT_DIR]}"
+	cat <<'USAGE'
 
-	Operator principle:
-		Observe directly. Validate physically. Debug iteratively.
-	USAGE
+Environment overrides:
+	ROOT              Workspace base. Default: $HOME/Vec
+	ENGINEERING_DIR   Engineering root. Default: $ROOT/Engineering
+	OUTPUT_DIR        Case-storage root.
+	NO_COLOR          Set to a non-empty value to disable ANSI color.
+
+────────────────────────────────────────────────────────────────────────
+EXECUTION OPTIONS
+────────────────────────────────────────────────────────────────────────
+
+	--apply
+		Perform file-writing operations and commands routed through run_cmd.
+
+	--dry-run
+		Preview routed filesystem actions. This is the default.
+
+	--no-load-run
+		Legacy alias for --dry-run.
+
+	--force
+		Allow generated files to be replaced after timestamped backup.
+		This affects write_file-managed artifacts only.
+
+	-v, --verbose
+		Enable diagnostic output.
+
+	--self-test
+		Run the built-in temporary-directory smoke test. No command required.
+
+	--version
+		Print the current version and exit.
+
+	-h, --help
+		Show this help text and exit.
+
+────────────────────────────────────────────────────────────────────────
+CURRENT NEW-CASE OUTPUT
+────────────────────────────────────────────────────────────────────────
+
+	cases/
+	├── logs/
+	├── artifacts/
+	└── TH_<run-id>_<title>/
+		├── manifest/
+		│   ├── run_manifest_<run-id>.txt
+		│   ├── case_manifest_<run-id>.txt
+		│   └── summary_<run-id>.txt
+		├── evidence/
+		│   ├── raw/
+		│   ├── photos/
+		│   ├── logs/
+		│   └── operator_notes/
+		├── derived/
+		│   ├── timelines/
+		│   ├── extracts/
+		│   └── figures/
+		├── commands/
+		│   ├── collection.log
+		│   └── replay.sh
+		└── reports/
+			├── initial_triage.md
+			└── handoff.md
+
+The environment, software-version, and checksum writers exist in the source but
+are currently disabled in the new-case workflow. collection.log, replay.sh, and
+handoff.md still contain placeholder content in v1.1.0.
+
+Examples:
+	# Preview a new case
+	tracehold new \
+		--title gps_quality_degradation \
+		--description "Position estimate becomes unstable near Site 04" \
+		--severity P2 \
+		--asset AV-017
+
+	# Create it in a temporary case root
+	tracehold new \
+		--title gps_quality_degradation \
+		--description "Position estimate becomes unstable near Site 04" \
+		--severity P2 \
+		--asset AV-017 \
+		--site SITE-04 \
+		--output-dir /tmp/tracehold-cases \
+		--apply
+
+	# Run the smoke test
+	tracehold --self-test --verbose
+
+Operator principle:
+	Observe directly. Validate physically. Debug iteratively.
+USAGE
 }
 
 # --- CLI helpers -------------------------------------------------------------
@@ -1468,8 +1439,12 @@ sync_variadic_inputs() {
     fi
 
     if (( WAS_SET[RECENT_CHANGE] )); then
-        INPUT[RECENT_CHANGE]="$(join_by '; ' "${RECENT_CHANGES[@]}")"
+        INPUT[RECENT_CHANGE]="$(join_by ', ' "${RECENT_CHANGES[@]}")"
     fi
+
+	if (( WAS_SET[FILE] )); then
+		INPUT[FILE]="$(join_by ', ' "${FILES[@]}")"
+	fi
 }
 
 # --- Argument parsing --------------------------------------------------------
@@ -1563,8 +1538,9 @@ parse_args() {
                 shift 2
                 ;;
             --file)
-                set_cli_value "$1" "INPUT[FILE]" "WAS_SET[FILE]" "${2-}"
-                shift 2
+				shift
+				collect_cli_values "--file" FILES "WAS_SET[FILE]" "$@"
+                shift "$CLI_VALUES_CONSUMED"
                 ;;
             --type)
                 set_cli_value "$1" "INPUT[TYPE]" "WAS_SET[TYPE]" "${2-}"
@@ -1642,6 +1618,7 @@ validate_config() {
         + COMMANDS[VERIFY]
         + COMMANDS[BUNDLE]
     ))
+	debug "command_count: $command_count"
 
     (( command_count == 1 )) || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
 
@@ -1657,7 +1634,7 @@ validate_config() {
             || hardstop "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4" "$EX_USAGE"
 
         INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
-		debug "Generated Case-ID: ${INPUT[CASE]}"
+		log "Generated Case-ID: ${INPUT[CASE]}"
         return 0
     fi
 
@@ -1665,29 +1642,37 @@ validate_config() {
     (( WAS_SET[TITLE] == 0 )) || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
     (( WAS_SET[CASE] )) || hardstop "Input --case required" "$EX_USAGE"
 
-	# checking whether case-id exists
-    [[ -d "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}" ]] \
-        || hardstop "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]} does not exist" "$EX_DATAERR"
+	# all other commands require a valid/existing case-id directory + manifests
+	assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+    assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_*.txt"
+	assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_*.txt"
 
 	# validate 'add' workflow
     if (( COMMANDS[ADD] )); then
-		assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
-        assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
-		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest.txt"
-
 		(( WAS_SET[FILE] )) || hardstop "Input --file required" "$EX_USAGE"
         (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
-		assert_file_exists "${INPUT[FILE]}"
+
+		# file must exist & type must be a valid option
+
+		for file in "${FILES[@]}"; do
+			debug "Verifying input files exist: $file"
+			assert_file_exists "$file"
+		done
 
         case "${INPUT[TYPE]}" in
-            raw|photo|log|note) return 0;;
-            *) hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or other" "$EX_IOERR" ;;
+            raw|photo|log|note)
+				log "File type validated: ${INPUT[TYPE]}";
+				return 0;;
+            *) hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" "$EX_IOERR" ;;
         esac
+
+
+
     fi
 
 	# validate 'collect' workflow
-    if (( COMMANDS[COLLECT] )) && (( WAS_SET[PROFILE] == 0 )); then
-        debug "No --profile supplied; using '${INPUT[PROFILE]}'"
+    if (( COMMANDS[COLLECT] )); then
+        debug "Running validate_config COLLECT"
     fi
 
 	# validate 'verify' workflow
@@ -1714,9 +1699,6 @@ validate_config() {
 run_workflow() {
     info "Run ID: $RUN_ID"
 
-    ensure_dir "${INPUT[OUTPUT_DIR]}/logs"
-    ensure_dir "${INPUT[OUTPUT_DIR]}/artifacts"
-
     make_run_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_${RUN_ID}.txt"
 
     if (( COMMANDS[NEW] )); then
@@ -1724,7 +1706,7 @@ run_workflow() {
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest"
 
-        make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
+        make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_${RUN_ID}.txt"
         #environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
         #software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
         #verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
@@ -1750,21 +1732,17 @@ run_workflow() {
     fi
 
     if (( COMMANDS[ADD] )); then
-
-
         debug "Adding ${INPUT[TYPE]} file: ${INPUT[FILE]} to ${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
 
-        if [[ -f "${INPUT[FILE]}" && -e "${INPUT[FILE]}" ]]; then
-
-            case "${INPUT[TYPE]}" in
-                raw) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/raw";;
-                photo) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/photos";;
-                log)  cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/logs";;
-                note) cp -a "${INPUT[FILE]}" "${INPUT[OUTPUT_DIR]}/evidence/operator_notes";;
-                *) warn "Unknown file type. Available: 'raw','photo','log','note'" ;;
-            esac
-        fi
-
+			for file in "${FILES[@]}"; do
+            	case "${INPUT[TYPE]}" in
+					raw) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw";;
+					photo) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos";;
+					log)  run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs";;
+					note) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes";;
+					*) warn "Unknown file type. Available: 'raw','photo','log','note'" ;;
+				esac
+			done
     fi
 
     if (( COMMANDS[COLLECT] )); then
@@ -1841,16 +1819,22 @@ run_self_test() {
 				WAS_SET[FILE]=1
 				WAS_SET[TYPE]=1
 
+				INPUT[TYPE]=raw
+
 				if (( SCRIPT[SELF_TEST] )); then
-					[[ -f "${INPUT[OUTPUT_DIR]}/input_test_file.txt" ]] || { \
-					touch "${INPUT[OUTPUT_DIR]}/input_test_file.txt" && \
-					log "Created ${INPUT[OUTPUT_DIR]}/input_test_file.txt"
+					[[ -f "${INPUT[OUTPUT_DIR]}/input_test_file_1.txt" && \
+					   -f "${INPUT[OUTPUT_DIR]}/input_test_file_2.txt" ]] || { \
+
+					touch "${INPUT[OUTPUT_DIR]}/input_test_file_1.txt"
+					touch "${INPUT[OUTPUT_DIR]}/input_test_file_2.txt"
+					log "Created ${INPUT[OUTPUT_DIR]}/input_test_files.txt"
 					}
 				fi
 
 				INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
-				INPUT[FILE]="${INPUT[OUTPUT_DIR]}/input_test_file.txt"
-				INPUT[TYPE]="photo"
+				FILES+=("${INPUT[OUTPUT_DIR]}/input_test_file_1.txt")
+				FILES+=("${INPUT[OUTPUT_DIR]}/input_test_file_2.txt")
+				sync_variadic_inputs
 			;;
 
 			2|COLLECT)
@@ -1884,8 +1868,6 @@ run_self_test() {
     SCRIPT[APPLY]="$old_apply"
     INPUT[OUTPUT_DIR]="$old_output"
 
-    ls -lrth "$tmp_dir"
-	cat "$tmp_dir"/*/*
 	rm -rf "$tmp_dir"
     log "Self-test passed"
 }
