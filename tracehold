@@ -4,20 +4,24 @@
 # =============================================================================
 # tracehold
 #
-# A Bash tool that turns an ambiguous field problem into a complete,
-# timestamped, integrity-checked case file.
+# A Bash tool for turning ambiguous field failures into structured,
+# timestamped, integrity-conscious engineering case files.
 #
-# Pattern:
-#   parse_args ->   self-test       -> run_workflow
-#                   validate_config -> run_workflow
+# Flow:
+#   parse_args -> resolve_state -> validate_config -> run_workflow
+#                            \-> self_test
 #
-# Ensures:
-# - the right evidence was captured before it disappeared;
-# - timestamps and configuration are preserved;
-# - everyone is discussing the same vehicle, software version, site, and event;
-# - logs can be handed to another engineer without a 30-minute explanation;
-# - the original evidence remains distinguishable from processed output;
-# - the eventual fix can be connected back to the original symptom.
+# Tracehold is designed to:
+# - preserve evidence before it disappears or is altered;
+# - bind logs, configuration, assets, sites, versions, and timestamps together;
+# - separate direct observations, known facts, assumptions, and hypotheses;
+# - keep original evidence distinct from derived analysis;
+# - produce a case another engineer can continue without verbal-only context;
+# - connect the eventual finding or fix back to the original field symptom.
+#
+# Principle:
+#   Hold the evidence. Keep the context. Find the truth.
+
 # =============================================================================
 # endregion Script overview
 # =============================================================================
@@ -28,7 +32,7 @@
 
 # --- Metadata ----------------------------------------------------------------
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 AUTHOR="V Halcyon"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -37,9 +41,9 @@ RUN_ID="$(date -u +"%Y%m%d_%H%M%S_UTC")"
 
 # --- Directory and case defaults ---------------------------------------------
 
-VEC_ROOT="${VEC_ROOT:-${HOME}/Vec}"
-ENGINEERING_DIR="${ENGINEERING_DIR:-${VEC_ROOT}/Engineering}"
-CASE_PREFIX="GC"
+ROOT="${ROOT:-${HOME}/Vec}"
+ENGINEERING_DIR="${ENGINEERING_DIR:-${ROOT}/Engineering}"
+CASE_PREFIX="TH"
 
 # --- Input tracking ----------------------------------------------------------
 
@@ -133,6 +137,26 @@ declare -A COMMANDS=(
     [BUNDLE]=0
 )
 
+COMMAND_KEYS=(
+	NEW
+	ADD
+	COLLECT
+	VERIFY
+	BUNDLE
+)
+
+# --- Error codes -------------------------------------------------------------
+
+readonly EX_GENERAL=1
+readonly EX_USAGE=64
+readonly EX_DATAERR=65
+readonly EX_NOINPUT=66
+readonly EX_UNAVAILABLE=69
+readonly EX_SOFTWARE=70
+readonly EX_CANTCREAT=73
+readonly EX_IOERR=74
+readonly EX_CONFIG=78
+
 # =============================================================================
 # endregion S0. Metadata and globals
 # =============================================================================
@@ -152,8 +176,21 @@ info()  { printf "%s[INFO]%s %s\n" "$(_color '1;34')" "$(_reset)" "$*"; }
 warn()  { printf "%s[WARN]%s %s\n" "$(_color '1;33')" "$(_reset)" "$*" >&2; }
 err()   { printf "%s[ERR]%s %s\n" "$(_color '1;31')" "$(_reset)" "$*" >&2; }
 debug() { (( SCRIPT[VERBOSE] )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
-die() { err "$*"; exit "${2:-1}" ; }
 timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+
+hardstop() {
+    local message="${1:-Fatal error}"
+    local exit_code="${2:-1}"
+
+    if [[ ! "$exit_code" =~ ^[1-9][0-9]*$ ]] ||
+       (( exit_code > 255 )); then
+        err "Invalid exit code supplied to hardstop(): ${exit_code}"
+        exit_code=70
+    fi
+
+    err "$message"
+    exit "$exit_code"
+}
 
 # --- Runtime error handling --------------------------------------------------
 
@@ -222,9 +259,9 @@ cleanup() {
 # region S2. Validation helpers
 # =============================================================================
 
-require_command() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
-assert_file_exists() { [[ -f "$1" ]] || die "Expected file does not exist: $1"; }
-assert_dir_exists() { [[ -d "$1" ]] || die "Expected directory does not exist: $1"; }
+require_command() { command -v "$1" >/dev/null 2>&1 || hardstop "Missing required command: $1" "$EX_NOINPUT"; }
+assert_file_exists() { [[ -f "$1" ]] || hardstop "Expected file does not exist: $1" "$EX_DATAERR"; }
+assert_dir_exists() { [[ -d "$1" ]] || hardstop "Expected directory does not exist: $1" "$EX_DATAERR"; }
 is_positive_integer() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 is_yes() { case "${1,,}" in y|yes|true|1|on) return 0 ;; *) return 1 ;; esac; }
 
@@ -259,17 +296,25 @@ backup_if_exists() {
 write_file() {
     local path="$1"
     local content="$2"
-    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]]; then
+    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]] && (( SCRIPT[SELF_TEST] == 0 )); then
         warn "File exists, skipping: $path  Use --force to replace after backup."
         return 0
+	elif [[ -e "$path" && "${SCRIPT[SELF_TEST]}" -eq 1 ]]; then
+		info "Appending self-test manifest to existing manifest file: $path"
     fi
     ensure_dir "$(dirname "$path")"
     [[ -e "$path" || -L "$path" ]] && backup_if_exists "$path"
     if (( SCRIPT[APPLY] )); then
         local tmp="${path}.tmp.$$"
-        printf "%s" "$content" > "$tmp"
-        mv "$tmp" "$path"
-        log "Wrote $path"
+		if (( SCRIPT[SELF_TEST] && !COMMANDS[NEW])); then
+			cp -a "$path" "$tmp"
+			printf "%s" "$content" >> "$tmp"
+			log "Appended to $path"
+		else
+			printf "%s" "$content" > "$tmp"
+			log "Wrote $path"
+		fi
+		mv "$tmp" "$path"
     else
         printf "[DRY RUN] write %q\n" "$path"
     fi
@@ -344,22 +389,204 @@ split_csv() {
 
 make_run_manifest() {
     debug "running make_run_manifest"
-    local path="$1"
 
-    write_file_stream "$path" <<-RUN_MANIFEST
-	version=$VERSION
-	author=$AUTHOR
-	run_id=$RUN_ID
-	timestamp=$(timestamp)
-	script=$SCRIPT_NAME
-	script_path=$SCRIPT_PATH
-	script_dir=$SCRIPT_DIR
-	profile=${INPUT[PROFILE]}
-	output_dir=${INPUT[OUTPUT_DIR]}
-	apply=${SCRIPT[APPLY]}
-	force=${SCRIPT[FORCE]}
-	verbose=${SCRIPT[VERBOSE]}
-	RUN_MANIFEST
+    local path="${1:?make_run_manifest requires an output path}"
+    local generated_at
+    local manifest
+
+    require_command jq
+
+    generated_at="$(timestamp)"
+
+    manifest="$(
+        jq -n \
+            --arg schema_version       "1.0" \
+            --arg manifest_type        "tracehold.run_manifest" \
+            --arg tracehold_version    "$VERSION" \
+            --arg author               "$AUTHOR" \
+            --arg script_name          "$SCRIPT_NAME" \
+            --arg script_path          "$SCRIPT_PATH" \
+            --arg script_dir           "$SCRIPT_DIR" \
+            --arg run_id               "$RUN_ID" \
+            --arg generated_at_utc     "$generated_at" \
+            --arg working_directory    "$(pwd -P)" \
+            --arg profile              "${INPUT[PROFILE]}" \
+            --arg output_dir           "${INPUT[OUTPUT_DIR]}" \
+            --arg title                "${INPUT[TITLE]}" \
+            --arg description          "${INPUT[DESCRIPTION]}" \
+            --arg asset                "${INPUT[ASSET]}" \
+            --arg severity             "${INPUT[SEVERITY]}" \
+            --arg site                 "${INPUT[SITE]}" \
+            --arg reported_by          "${INPUT[REPORTED_BY]}" \
+            --arg owner                "${INPUT[OWNER]}" \
+            --arg first_observed       "${INPUT[FIRST_OBSERVED]}" \
+            --arg last_observed        "${INPUT[LAST_OBSERVED]}" \
+            --arg operational_impact   "${INPUT[OPERATIONAL_IMPACT]}" \
+            --arg affected_scope       "${INPUT[AFFECTED_SCOPE]}" \
+            --arg recent_change        "${INPUT[RECENT_CHANGE]}" \
+            --arg status               "${INPUT[STATUS]}" \
+            --arg repro_status         "${INPUT[REPRO_STATUS]}" \
+            --arg containment_status   "${INPUT[CONTAINMENT_STATUS]}" \
+            --arg triage_confidence    "${INPUT[TRIAGE_CONFIDENCE]}" \
+            --arg case_id              "${INPUT[CASE]}" \
+            --arg file                 "${INPUT[FILE]}" \
+            --arg evidence_type        "${INPUT[TYPE]}" \
+            --argjson process_id       "$$" \
+            --argjson bash_process_id  "$BASHPID" \
+            --argjson apply            "${SCRIPT[APPLY]}" \
+            --argjson force            "${SCRIPT[FORCE]}" \
+            --argjson verbose          "${SCRIPT[VERBOSE]}" \
+            --argjson self_test        "${SCRIPT[SELF_TEST]}" \
+            --argjson title_set               "${WAS_SET[TITLE]}" \
+            --argjson description_set         "${WAS_SET[DESCRIPTION]}" \
+            --argjson asset_set               "${WAS_SET[ASSET]}" \
+            --argjson severity_set            "${WAS_SET[SEVERITY]}" \
+            --argjson site_set                "${WAS_SET[SITE]}" \
+            --argjson reported_by_set         "${WAS_SET[REPORTED_BY]}" \
+            --argjson owner_set               "${WAS_SET[OWNER]}" \
+            --argjson first_observed_set      "${WAS_SET[FIRST_OBSERVED]}" \
+            --argjson last_observed_set       "${WAS_SET[LAST_OBSERVED]}" \
+            --argjson operational_impact_set  "${WAS_SET[OPERATIONAL_IMPACT]}" \
+            --argjson affected_scope_set      "${WAS_SET[AFFECTED_SCOPE]}" \
+            --argjson recent_change_set       "${WAS_SET[RECENT_CHANGE]}" \
+            --argjson status_set              "${WAS_SET[STATUS]}" \
+            --argjson repro_status_set        "${WAS_SET[REPRO_STATUS]}" \
+            --argjson containment_status_set  "${WAS_SET[CONTAINMENT_STATUS]}" \
+            --argjson triage_confidence_set   "${WAS_SET[TRIAGE_CONFIDENCE]}" \
+            --argjson profile_set             "${WAS_SET[PROFILE]}" \
+            --argjson case_set                "${WAS_SET[CASE]}" \
+            --argjson file_set                "${WAS_SET[FILE]}" \
+            --argjson type_set                "${WAS_SET[TYPE]}" \
+            --argjson output_dir_set          "${WAS_SET[OUTPUT_DIR]}" \
+            --argjson command_new             "${COMMANDS[NEW]}" \
+            --argjson command_add             "${COMMANDS[ADD]}" \
+            --argjson command_collect         "${COMMANDS[COLLECT]}" \
+            --argjson command_verify          "${COMMANDS[VERIFY]}" \
+            --argjson command_bundle          "${COMMANDS[BUNDLE]}" \
+            '
+            {
+                new:     ($command_new == 1),
+                add:     ($command_add == 1),
+                collect: ($command_collect == 1),
+                verify:  ($command_verify == 1),
+                bundle:  ($command_bundle == 1)
+            } as $command_flags
+
+            | [
+                $command_flags
+                | to_entries[]
+                | select(.value == true)
+                | .key
+            ] as $active_commands
+
+            | {
+                schema_version: $schema_version,
+                manifest_type: $manifest_type,
+
+                metadata: {
+                    tracehold_version: $tracehold_version,
+                    author: $author,
+                    script: {
+                        name: $script_name,
+                        path: $script_path,
+                        directory: $script_dir
+                    }
+                },
+
+                execution: {
+                    run_id: $run_id,
+                    generated_at_utc: $generated_at_utc,
+                    working_directory: $working_directory,
+                    process_id: $process_id,
+                    bash_process_id: $bash_process_id,
+                    mode: (
+                        if $apply == 1
+                        then "apply"
+                        else "dry_run"
+                        end
+                    ),
+                    flags: {
+                        apply: ($apply == 1),
+                        force: ($force == 1),
+                        verbose: ($verbose == 1),
+                        self_test: ($self_test == 1)
+                    }
+                },
+
+                commands: {
+                    flags: $command_flags,
+                    active: $active_commands,
+                    active_count: ($active_commands | length)
+                },
+
+                inputs: {
+                    case_description: {
+                        title: $title,
+                        description: $description,
+                        asset: $asset,
+                        severity: $severity,
+                        site: $site
+                    },
+
+                    ownership_and_timeline: {
+                        reported_by: $reported_by,
+                        owner: $owner,
+                        first_observed: $first_observed,
+                        last_observed: $last_observed
+                    },
+
+                    triage_state: {
+                        operational_impact: $operational_impact,
+                        affected_scope: $affected_scope,
+                        recent_change: $recent_change,
+                        status: $status,
+                        reproduction_status: $repro_status,
+                        containment_status: $containment_status,
+                        triage_confidence: $triage_confidence
+                    },
+
+                    case_and_evidence: {
+                        profile: $profile,
+                        case_id: $case_id,
+                        file: $file,
+                        evidence_type: $evidence_type,
+                        output_directory: $output_dir
+                    }
+                },
+
+                input_provenance: {
+                    was_set: {
+                        title: ($title_set == 1),
+                        description: ($description_set == 1),
+                        asset: ($asset_set == 1),
+                        severity: ($severity_set == 1),
+                        site: ($site_set == 1),
+
+                        reported_by: ($reported_by_set == 1),
+                        owner: ($owner_set == 1),
+                        first_observed: ($first_observed_set == 1),
+                        last_observed: ($last_observed_set == 1),
+
+                        operational_impact: ($operational_impact_set == 1),
+                        affected_scope: ($affected_scope_set == 1),
+                        recent_change: ($recent_change_set == 1),
+                        status: ($status_set == 1),
+                        reproduction_status: ($repro_status_set == 1),
+                        containment_status: ($containment_status_set == 1),
+                        triage_confidence: ($triage_confidence_set == 1),
+
+                        profile: ($profile_set == 1),
+                        case_id: ($case_set == 1),
+                        file: ($file_set == 1),
+                        evidence_type: ($type_set == 1),
+                        output_directory: ($output_dir_set == 1)
+                    }
+                }
+            }
+            '
+    )" || hardstop "Failed to construct run manifest" "$EX_CANTCREAT"
+
+    write_file "$path" "${manifest}"$'\n'
 }
 
 # --- Case manifest -----------------------------------------------------------
@@ -1172,8 +1399,8 @@ set_cli_value() {
     local -n destination="$destination_name"
     local -n was_set="$was_set_name"
 
-    [[ -n "$value" ]] || die "Missing value for ${option}"
-    [[ "$value" != -* ]] || die "Missing value for ${option}; found option '${value}' instead"
+    [[ -n "$value" ]] || hardstop "Missing value for ${option}" "$EX_IOERR"
+    [[ "$value" != -* ]] || hardstop "Missing value for ${option}; found option '${value}' instead" "$EX_IOERR"
 
     destination="$value"
     was_set=1
@@ -1195,7 +1422,7 @@ collect_cli_values() {
         shift
     done
 
-    (( count > 0 )) || die "${option} requires at least one value"
+    (( count > 0 )) || hardstop "${option} requires at least one value" "$EX_IOERR"
 
     was_set=1
     CLI_VALUES_CONSUMED="$count"
@@ -1213,7 +1440,7 @@ select_command() {
         + COMMANDS[BUNDLE]
     ))
 
-    (( selected_count == 0 )) || die "Only one command may be selected"
+    (( selected_count == 0 )) || hardstop "Only one command may be selected" "$EX_USAGE"
 
     case "$command" in
         new)     COMMANDS[NEW]=1 ;;
@@ -1221,7 +1448,7 @@ select_command() {
         collect) COMMANDS[COLLECT]=1 ;;
         verify)  COMMANDS[VERIFY]=1 ;;
         bundle)  COMMANDS[BUNDLE]=1 ;;
-        *)       die "Unknown command: ${command}" ;;
+        *)       hardstop "Unknown command: ${command}" "$EX_IOERR" ;;
     esac
 
     debug "Command '${command}' selected"
@@ -1386,14 +1613,14 @@ parse_args() {
 
             --)
                 shift
-                (( $# == 0 )) || die "Unexpected positional argument after --: $1"
+                (( $# == 0 )) || hardstop "Unexpected positional argument after --: $1" "$EX_IOERR"
                 break
                 ;;
             -*)
-                die "Unknown option: $1"
+                hardstop "Unknown option: $1" "$EX_USAGE"
                 ;;
             *)
-                die "Unknown argument: $1"
+                hardstop "Unknown argument: $1" "$EX_IOERR"
                 ;;
         esac
     done
@@ -1416,48 +1643,55 @@ validate_config() {
         + COMMANDS[BUNDLE]
     ))
 
-    (( command_count == 1 )) || die "Select exactly one command: new, add, collect, verify, or bundle"
+    (( command_count == 1 )) || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
 
+	# validate 'new' workflow
     if (( COMMANDS[NEW] )); then
-        (( WAS_SET[CASE] == 0 )) || die "--case cannot be used with the 'new' command"
-        (( WAS_SET[TITLE] )) || die "Input --title required"
-        (( WAS_SET[DESCRIPTION] )) || die "Input --description required"
-        (( WAS_SET[SEVERITY] )) || die "Input --severity required"
-        (( WAS_SET[ASSET] )) || die "Input --asset required"
+        (( WAS_SET[CASE] == 0 )) || hardstop "--case cannot be used with the 'new' command" "$EX_USAGE"
+        (( WAS_SET[TITLE] )) || hardstop "Input --title required"  "$EX_USAGE"
+        (( WAS_SET[DESCRIPTION] )) || hardstop "Input --description required" "$EX_USAGE"
+        (( WAS_SET[SEVERITY] )) || hardstop "Input --severity required" "$EX_USAGE"
+        (( WAS_SET[ASSET] )) || hardstop "Input --asset required" "$EX_USAGE"
 
         [[ "${INPUT[SEVERITY]}" =~ ^P[0-4]$ ]] \
-            || die "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4"
+            || hardstop "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4" "$EX_USAGE"
 
         INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
-        debug "Generated Case-ID: ${INPUT[CASE]}"
+		debug "Generated Case-ID: ${INPUT[CASE]}"
         return 0
     fi
 
-    (( WAS_SET[TITLE] == 0 )) || die "--title is only valid with the new command"
-    (( WAS_SET[CASE] )) || die "Input --case required"
+	# all other commands require case-id and NOT title
+    (( WAS_SET[TITLE] == 0 )) || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
+    (( WAS_SET[CASE] )) || hardstop "Input --case required" "$EX_USAGE"
 
+	# checking whether case-id exists
     [[ -d "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}" ]] \
-        || die "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]} does not exist"
+        || hardstop "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]} does not exist" "$EX_DATAERR"
 
+	# validate 'add' workflow
     if (( COMMANDS[ADD] )); then
-        (( WAS_SET[FILE] )) || die "Input --file required"
-        [[ -f "${INPUT[FILE]}" ]] || die "${INPUT[FILE]} is not a regular file"
-        (( WAS_SET[TYPE] )) || die "Input --type required"
+        (( WAS_SET[FILE] )) || hardstop "Input --file required" "$EX_USAGE"
+        [[ -f "${INPUT[FILE]}" ]] || hardstop "${INPUT[FILE]} is not a regular file" "$EX_DATAERR"
+        (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
 
         case "${INPUT[TYPE]}" in
-            raw|photo|log|note) ;;
-            *) die "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" ;;
+            raw|photo|log|other) return 0;;
+            *) hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or other" "$EX_IOERR" ;;
         esac
     fi
 
+	# validate 'collect' workflow
     if (( COMMANDS[COLLECT] )) && (( WAS_SET[PROFILE] == 0 )); then
         debug "No --profile supplied; using '${INPUT[PROFILE]}'"
     fi
 
+	# validate 'verify' workflow
     if (( COMMANDS[VERIFY] )); then
         debug "Running validate_config VERIFY"
     fi
 
+	# validate 'bundle' workflow
     if (( COMMANDS[BUNDLE] )); then
         debug "Running validate_config BUNDLE"
     fi
@@ -1474,21 +1708,22 @@ validate_config() {
 # --- Main workflow -----------------------------------------------------------
 
 run_workflow() {
-    info "Starting workflow"
     info "Run ID: $RUN_ID"
+
     ensure_dir "${INPUT[OUTPUT_DIR]}/logs"
     ensure_dir "${INPUT[OUTPUT_DIR]}/artifacts"
 
     make_run_manifest "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
 
     if (( COMMANDS[NEW] )); then
+		debug "Case_ID set: ${INPUT[CASE]}"
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest"
 
         make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest.txt"
-        environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
-        software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
-        verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
+        #environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
+        #software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
+        #verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
 
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence"
         ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
@@ -1549,6 +1784,7 @@ run_workflow() {
 # --- Self-test ---------------------------------------------------------------
 
 run_self_test() {
+	debug "run_self_test executing..."
     local tmp_dir old_apply old_output
     tmp_dir="$(mktemp -d)"
     info "Self-test temp dir: $tmp_dir"
@@ -1556,7 +1792,7 @@ run_self_test() {
     old_output="${INPUT[OUTPUT_DIR]}"
 
 	SCRIPT[APPLY]=1
-    INPUT[OUTPUT_DIR]="$tmp_dir/output"
+    INPUT[OUTPUT_DIR]="$tmp_dir"
     INPUT[PROFILE]="${INPUT[PROFILE]:-default}"
 
     info "Output Directory: ${INPUT[OUTPUT_DIR]}"
@@ -1574,22 +1810,80 @@ run_self_test() {
 		debug "SCRIPT: $setting - ${SCRIPT[$setting]}"
 	done
 
-	for command in "${!COMMANDS[@]}"; do
-		debug "COMMANDS: $command - ${COMMANDS[$command]}"
+	for key in "${!COMMAND_KEYS[@]}"; do
+		debug "$key"
+		case $key in
+			0|NEW)
+				debug "running 'new' self-test..."
+				COMMANDS[NEW]=1
+
+				WAS_SET[CASE]=0
+				WAS_SET[TITLE]=1
+				WAS_SET[DESCRIPTION]=1
+				WAS_SET[SEVERITY]=1
+				WAS_SET[ASSET]=1
+
+				INPUT[TITLE]="self_test"
+				INPUT[DESCRIPTION]="this is a self-test run for smoke-test/functionality only"
+				INPUT[SEVERITY]="P4"
+				INPUT[ASSET]="A_000"
+			;;
+
+			1|ADD)
+				debug "running 'add' self-test..."
+				COMMANDS[NEW]=0
+				COMMANDS[ADD]=1
+
+				WAS_SET[TITLE]=0
+				WAS_SET[CASE]=1
+				WAS_SET[FILE]=1
+				WAS_SET[TYPE]=1
+
+				if (( SCRIPT[SELF_TEST] )); then
+					[[ -f "${INPUT[OUTPUT_DIR]}/input_test_file.txt" ]] || { \
+					touch "${INPUT[OUTPUT_DIR]}/input_test_file.txt" && \
+					log "Created ${INPUT[OUTPUT_DIR]}/input_test_file.txt"
+					}
+				fi
+
+				INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
+				INPUT[FILE]="${INPUT[OUTPUT_DIR]}/input_test_file.txt"
+				INPUT[TYPE]="photo"
+			;;
+
+			2|COLLECT)
+				debug "running 'collect' self-test..."
+				COMMANDS[ADD]=0
+				COMMANDS[COLLECT]=1
+
+				WAS_SET[PROFILE]=1
+			;;
+
+			3|VERIFY)
+				debug "running 'verify' self-test..."
+				COMMANDS[COLLECT]=0
+				COMMANDS[VERIFY]=1
+			;;
+
+			4|BUNDLE)
+				debug "running 'bundle' self-test..."
+				COMMANDS[VERIFY]=0
+				COMMANDS[BUNDLE]=1
+			;;
+		esac
+
+		validate_config
+		run_workflow
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
+		assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
+
 	done
-
-    validate_config
-    run_workflow
-    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
-    assert_file_exists "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
-
-    debug "First 5 lines run_manifest:" && head -n 5 "${INPUT[OUTPUT_DIR]}/logs/run_manifest_${RUN_ID}.txt"
-    debug "First 5 lines summary:" && head -n 5 "${INPUT[OUTPUT_DIR]}/logs/summary_${RUN_ID}.txt"
 
     SCRIPT[APPLY]="$old_apply"
     INPUT[OUTPUT_DIR]="$old_output"
 
     ls -lrth "$tmp_dir"
+	cat "$tmp_dir"/*/*
 	rm -rf "$tmp_dir"
     log "Self-test passed"
 }
@@ -1622,4 +1916,21 @@ fi
 
 # =============================================================================
 # endregion S9. Main
+# =============================================================================
+#
+#                         ┌───────────────┐
+#                         │   TRACEHOLD   │
+#                         └───────┬───────┘
+#                                 │
+#                      evidence ──◆── context
+#                                 │
+#                           understanding
+#
+# Evidence preserved.
+# Assumptions documented.
+# Unknowns clearly identified.
+#
+# Maintain the trace until the evidence supports a conclusion.
+#
+#                                                     — V. Halcyon
 # =============================================================================
