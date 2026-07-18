@@ -1,30 +1,33 @@
 # tracehold
-> Turn ambiguous field failures into structured, timestamped, evidence-conscious engineering case files.
 
-`tracehold` is a Bash-based incident capture and triage tool for engineering problems where hardware, software, communications, configuration, environment, operator procedure, and telemetry may all be interacting.
+> Turn ambiguous field failures into structured, timestamped, integrity-conscious engineering case files.
 
-It creates a consistent case structure for preserving evidence, documenting initial observations, separating raw data from derived analysis, and handing an investigation to another engineer without relying on verbal context.
+`tracehold` is a Bash-based incident capture and initial-triage tool for engineering problems where hardware, software, communications, configuration, environment, operator procedure, and telemetry may all be interacting.
+
+It creates a consistent case structure for preserving evidence, recording the original symptom, separating raw material from derived analysis, and handing an investigation to another engineer without relying on verbal-only context.
 
 ```text
-Observe directly.
-Validate physically.
-Debug iteratively.
-Protect the evidence.
+Hold the evidence.
+Keep the context.
+Find the truth.
 ```
+
+**Operator principle:** Observe directly. Validate physically. Debug iteratively.
 
 ## Project status
 
-**Current maturity: early alpha**
+**Version:** `1.1.0`  
+**Maturity:** early alpha
 
-The core case-creation workflow is under active development.
+The `new` workflow is the current center of gravity. The remaining commands are experimental or scaffolded and should not yet be treated as production incident-management tooling.
 
-| Command   | Purpose                                        | Status           |
-| --------- | ---------------------------------------------- | ---------------- |
-| `new`     | Create a new case and initial triage structure | Primary workflow |
-| `add`     | Add evidence to an existing case               | Partial          |
-| `collect` | Run collection profiles against a case         | Scaffolded       |
-| `verify`  | Validate structure and evidence integrity      | Scaffolded       |
-| `bundle`  | Create a portable case archive                 | Scaffolded       |
+| Command | Intended purpose | v1.1.0 state |
+|---|---|---|
+| `new` | Create a case and initial triage structure | Implemented primary workflow |
+| `add` | Copy evidence into an existing case | Experimental; known validation and dry-run issues |
+| `collect` | Run a collection profile | Scaffold only |
+| `verify` | Validate case structure and evidence integrity | Scaffold only |
+| `bundle` | Create a portable case archive | Scaffold only |
 
 Interfaces, file layouts, and option names may change before the first stable release.
 
@@ -34,80 +37,83 @@ Field failures rarely arrive as clean engineering problems.
 
 They arrive as:
 
-* “The vehicle acted strange.”
-* “The link dropped for a few seconds.”
-* “This only happens at one site.”
-* “It worked before the update.”
-* “The logs do not agree with what the operator saw.”
-* “We restarted it and the problem disappeared.”
+- “The vehicle acted strange.”
+- “The link dropped for a few seconds.”
+- “This only happens at one site.”
+- “It worked before the update.”
+- “The logs do not agree with what the operator saw.”
+- “We restarted it and the problem disappeared.”
 
 The first challenge is often not solving the failure. It is preserving enough reliable context to determine what actually happened.
 
-Ghostcase is designed to help establish:
+`tracehold` is designed to establish:
 
-* what was directly observed;
-* what remains unknown;
-* which assumptions require validation;
-* which assets, sites, versions, and time windows are involved;
-* where original evidence is stored;
-* which artifacts are derived from that evidence;
-* what containment has already occurred;
-* who owns the next action;
-* and what evidence would discriminate between competing hypotheses.
+- what was directly observed;
+- what remains unknown;
+- which assumptions require validation;
+- which assets, sites, versions, and time windows are involved;
+- where original evidence is stored;
+- which artifacts are derived from that evidence;
+- what containment has already occurred;
+- who owns the next action;
+- and what evidence would discriminate between competing hypotheses.
 
 ## Design principles
 
 ### Dry-run by default
 
-Ghostcase previews filesystem and command operations unless `--apply` is explicitly supplied.
+The script defaults to preview mode. File-writing helpers and commands routed through `run_cmd()` perform work only when `--apply` is supplied.
 
 ```bash
-./ghostcase.sh new [options]
-```
-
-Preview the intended actions first:
-
-```bash
-./ghostcase.sh new \
-    --title "intermittent_link_loss" \
+./tracehold.sh new \
+    --title intermittent_link_loss \
     --description "Vehicle loses command link during climb" \
     --severity P1 \
     --asset AV-042
 ```
 
-Apply them only when ready:
+Apply the planned changes only after reviewing the preview:
 
 ```bash
-./ghostcase.sh new \
-    --title "intermittent_link_loss" \
+./tracehold.sh new \
+    --title intermittent_link_loss \
     --description "Vehicle loses command link during climb" \
     --severity P1 \
     --asset AV-042 \
     --apply
 ```
 
+> [!WARNING]
+> The v1.1.0 `add` copy operation is not routed through `run_cmd()` and must not be assumed to obey dry-run protection. See [Known v1.1.0 limitations](#known-v110-limitations).
+
 ### Preserve raw evidence
 
 Original evidence should remain distinguishable from:
 
-* cleaned data;
-* extracts;
-* generated timelines;
-* figures;
-* summaries;
-* transformed logs;
-* and other analytical output.
+- cleaned data;
+- extracts;
+- generated timelines;
+- figures;
+- summaries;
+- transformed logs;
+- and other analytical output.
+
+The generated layout separates `evidence/` from `derived/` for this reason.
 
 ### Preserve execution context
 
-Each run receives a UTC-based run ID and produces execution metadata intended to capture:
+Each process receives a UTC run ID and constructs a JSON-formatted run manifest containing:
 
-* script version;
-* run time;
-* selected profile;
-* output location;
-* execution mode;
-* and relevant configuration.
+- script and Tracehold version metadata;
+- script path and working directory;
+- run ID and generation timestamp;
+- process identifiers;
+- selected command flags;
+- apply, force, verbose, and self-test state;
+- resolved input values;
+- and whether each input was explicitly supplied.
+
+The run manifest currently uses a `.txt` extension even though its content is JSON.
 
 ### Make handoff possible
 
@@ -115,40 +121,47 @@ A case should contain enough structured context for another engineer to continue
 
 ### Treat hypotheses as hypotheses
 
-Initial triage separates:
+The initial-triage report separates:
 
-* known facts;
-* reported behavior;
-* assumptions;
-* unknowns;
-* working hypotheses;
-* contradicting evidence;
-* and planned discriminating tests.
+- reported behavior;
+- known facts;
+- unknowns;
+- assumptions requiring validation;
+- working hypotheses;
+- supporting and contradicting evidence;
+- and planned discriminating tests.
+
+### Fail explicitly
+
+Fatal validation and runtime conditions are routed through `hardstop()`, which emits a clear error and exits with a deliberate nonzero status.
 
 ## Requirements
 
-Ghostcase is currently Linux-focused.
+### Required for current workflows
 
-### Required
+- Linux or a GNU-compatible environment
+- Bash `4.3` or newer
+- `jq`
+- `realpath`
+- standard utilities including `date`, `mkdir`, `cp`, `mv`, `rm`, and `mktemp`
 
-* Bash 4.3 or newer
-* Standard GNU/Linux command-line utilities
+Bash `4.3+` is required because the CLI helpers use nameref variables through `local -n`.
 
-### Used by the current environment collector
+`jq` is currently required for every normal workflow, including dry-run, because the run manifest is constructed before it is handed to the file-writing layer.
 
-Depending on the selected workflow and host configuration:
+### Defined but currently disabled collectors
 
-* `realpath`
-* `date`
-* `uname`
-* `uptime`
-* `free`
-* `df`
-* `lsusb`
-* `lspci`
-* `dmesg`
+The source contains environment, software, and checksum helper functions, but the `new` workflow does not currently invoke them. If enabled later, they may use utilities such as:
 
-Some commands may require additional packages or elevated permissions. For example, access to `dmesg` may be restricted by the operating system.
+- `uname`
+- `uptime`
+- `free`
+- `df`
+- `lsusb`
+- `lspci`
+- `dmesg`
+
+Some of those commands may require additional packages or permissions.
 
 ## Installation
 
@@ -156,50 +169,65 @@ Clone the repository:
 
 ```bash
 git clone <repository-url>
-cd ghostcase
+cd tracehold
 ```
 
 Make the script executable:
 
 ```bash
-chmod +x ghostcase.sh
+chmod +x tracehold.sh
 ```
 
-Verify that it launches:
+Verify the entry points:
 
 ```bash
-./ghostcase.sh --version
-./ghostcase.sh --help
+./tracehold.sh --version
+./tracehold.sh --help
 ```
 
-Optionally, place the script somewhere already included in your `PATH`:
+Optionally create a symlink somewhere already included in `PATH`:
 
 ```bash
-ln -s "$(pwd)/ghostcase.sh" "$HOME/.local/bin/ghostcase"
+mkdir -p "$HOME/.local/bin"
+ln -s "$(pwd)/tracehold.sh" "$HOME/.local/bin/tracehold"
 ```
 
 Then invoke it as:
 
 ```bash
-ghostcase --help
+tracehold --help
 ```
 
 ## Quick start
 
-Create a new investigation:
+Preview a case without changing the filesystem:
 
 ```bash
-./ghostcase.sh new \
-    --title "gps_quality_degradation" \
+./tracehold.sh new \
+    --title gps_quality_degradation \
     --description "Position estimate becomes unstable near Site 04" \
     --severity P2 \
-    --asset AV-017 \
+    --asset AV-017
+```
+
+Create a more fully described case:
+
+```bash
+./tracehold.sh new \
+    --title gps_quality_degradation \
+    --description "Position estimate becomes unstable near Site 04" \
+    --severity P2 \
+    --asset AV-017 AV-023 \
     --site SITE-04 \
     --reported-by "Flight Operations" \
-    --owner "V Halcyon" \
-    --operational-impact "Mission aborted and asset temporarily grounded" \
-    --affected-scope "One asset; fleet scope unknown" \
-    --recent-change "Navigation firmware updated before first event" \
+    --owner "V Halcyon" "Navigation Engineering" \
+    --first-observed "2026-07-18T04:12:00Z" \
+    --last-observed "2026-07-18T04:37:00Z" \
+    --operational-impact "Mission aborted and assets temporarily grounded" \
+    --affected-scope "Two assets at one site; fleet scope unknown" \
+    --recent-change "Navigation firmware updated" "Site antenna replaced" \
+    --containment-status "Affected assets grounded pending review" \
+    --triage-confidence low \
     --profile general \
     --apply
 ```
@@ -207,8 +235,8 @@ Create a new investigation:
 Run with diagnostic output:
 
 ```bash
-./ghostcase.sh new \
-    --title "gps_quality_degradation" \
+./tracehold.sh new \
+    --title gps_quality_degradation \
     --description "Position estimate becomes unstable near Site 04" \
     --severity P2 \
     --asset AV-017 \
@@ -219,80 +247,86 @@ Run with diagnostic output:
 ## Command model
 
 ```text
-ghostcase COMMAND [options]
+tracehold COMMAND [OPTIONS]
 ```
 
-Available commands:
+Exactly one primary command is required for normal operation.
 
 ```text
 new       Create a new investigation case
-add       Add evidence to an existing case
-collect   Collect data into an existing case
-verify    Validate a case and its evidence
-bundle    Package a case for transport or handoff
+add       Copy one evidence file into an existing case
+collect   Select a case for a future collection workflow
+verify    Select a case for a future verification workflow
+bundle    Select a case for a future archive workflow
 ```
 
-Exactly one primary command should be selected per invocation.
+`--help`, `--version`, and `--self-test` do not require a primary command.
 
 ## Creating a case
 
 ```bash
-./ghostcase.sh new [options]
+./tracehold.sh new [options]
 ```
 
-A generated case ID follows this general pattern:
+A generated case ID follows this pattern:
 
 ```text
-GC_<UTC timestamp>_<title>
+TH_<YYYYMMDD_HHMMSS_UTC>_<title>
 ```
 
 Example:
 
 ```text
-GC_20260716_231530_UTC_intermediate_link_loss
+TH_20260718_041200_UTC_intermittent_link_loss
 ```
 
-### Core case fields
+The title is appended directly to the directory name. v1.1.0 does not sanitize it, so use a filesystem-safe slug containing letters, numbers, underscores, or hyphens.
 
-| Option                 | Description                                 |
-| ---------------------- | ------------------------------------------- |
-| `--title STRING`       | Short investigation title                   |
-| `--description STRING` | Initial symptom or problem description      |
-| `--severity LEVEL`     | Initial priority, such as `P0` through `P4` |
-| `--asset ID`           | Affected asset, vehicle, device, or system  |
-| `--site ID`            | Affected site or operating location         |
-| `--case CASE_ID`       | Explicit case identifier where applicable   |
-| `--profile NAME`       | Collection or analysis profile              |
-| `--output-dir DIR`     | Override the default case root              |
+### Required fields
+
+| Option | Description |
+|---|---|
+| `--title SLUG` | Short investigation title appended to the case ID |
+| `--description STRING` | Initial observed symptom or problem description |
+| `--severity P0..P4` | Initial priority classification |
+| `--asset ID [ID ...]` | One or more affected assets, vehicles, devices, or systems |
+
+Severity is validated against `P0`, `P1`, `P2`, `P3`, and `P4`.
 
 ### Ownership and time
 
-| Option                 | Description                                                     |
-| ---------------------- | --------------------------------------------------------------- |
-| `--reported-by NAME`   | Person, team, customer, operator, or system reporting the issue |
-| `--owner NAME`         | Current investigation owner                                     |
-| `--first-observed UTC` | Earliest known observation time                                 |
-| `--last-observed UTC`  | Most recent known observation time                              |
+| Option | Description |
+|---|---|
+| `--reported-by STRING` | Person, team, customer, operator, or system reporting the issue |
+| `--owner STRING [STRING ...]` | One or more current investigation owners |
+| `--first-observed STRING` | Earliest known observation time |
+| `--last-observed STRING` | Most recent known observation time |
 
-Use UTC where possible. Quote timestamps and values containing spaces:
+Use UTC ISO 8601 timestamps where possible:
 
 ```bash
---first-observed "2026-07-16T19:42:00Z"
+--first-observed "2026-07-18T04:12:00Z"
 ```
 
-### Triage state
+Timestamp format is not currently validated.
 
-| Option                        | Description                                                                            |
-| ----------------------------- | -------------------------------------------------------------------------------------- |
-| `--operational-impact STRING` | Actual consequence or credible operational risk                                        |
-| `--affected-scope STRING`     | Known affected population, fleet, site, or version                                     |
-| `--recent-change STRING`      | Relevant recent hardware, software, configuration, procedural, or environmental change |
-| `--status STRING`             | Current investigation or operational state                                             |
-| `--repro-status STRING`       | Current reproduction state                                                             |
-| `--containment-status STRING` | Current containment or restriction                                                     |
-| `--triage-confidence LEVEL`   | Confidence in the initial assessment                                                   |
+### Scope and triage state
 
-Example reproduction states:
+| Option | Description |
+|---|---|
+| `--site ID [ID ...]` | One or more affected sites or operating locations |
+| `--operational-impact STRING` | Actual operational consequence or credible risk |
+| `--affected-scope STRING` | Known affected fleet, asset, site, version, or population |
+| `--recent-change STRING [STRING ...]` | One or more relevant recent changes |
+| `--status STRING` | Current investigation or operational state |
+| `--repro-status STRING` | Current reproduction state |
+| `--containment-status STRING` | Current containment action or restriction |
+| `--triage-confidence STRING` | Confidence in the current assessment |
+| `--profile NAME` | Collection or analysis profile label |
+
+`--repro-status`, `--triage-confidence`, and `--profile` are currently recorded as supplied and are not enum-validated.
+
+Conventional reproduction values include:
 
 ```text
 not-attempted
@@ -301,7 +335,7 @@ intermittent
 reproduced
 ```
 
-Example confidence levels:
+Conventional confidence values include:
 
 ```text
 low
@@ -309,49 +343,72 @@ medium
 high
 ```
 
+### Variadic options
+
+The following options accept one or more values in a single occurrence:
+
+- `--asset`
+- `--site`
+- `--owner`
+- `--recent-change`
+
+They consume every following argument until the next token beginning with `-`.
+
+```bash
+--asset AV-017 AV-023 AV-041 \
+--site SITE-04 SITE-09 \
+--owner "V Halcyon" "RF Engineering" \
+--recent-change "Firmware updated" "Antenna replaced"
+```
+
+Quote each multi-word value so it remains one array element.
+
 ## Adding evidence
 
 ```bash
-./ghostcase.sh add \
+./tracehold.sh add \
     --case CASE_ID \
     --file PATH \
     --type TYPE \
     --apply
 ```
 
+Accepted evidence types and destinations:
+
+| Type | Destination |
+|---|---|
+| `raw` | `evidence/raw/` |
+| `photo` | `evidence/photos/` |
+| `log` | `evidence/logs/` |
+| `note` | `evidence/operator_notes/` |
+
 Example:
 
 ```bash
-./ghostcase.sh add \
-    --case GC_20260716_231530_UTC_link_loss \
+./tracehold.sh add \
+    --case TH_20260718_041200_UTC_intermittent_link_loss \
     --file ./vehicle.log \
     --type log \
     --apply
 ```
 
-Planned evidence types include:
+The input file must exist and be a regular file.
 
-```text
-raw
-photo
-log
-note
-```
-
-Evidence ingestion and routing are still under development.
+> [!CAUTION]
+> `add` is experimental in v1.1.0. Its current validation expects manifest filenames containing the current invocation's run ID, which normally differs from the case-creation run ID. Its direct `cp -a` operation also bypasses the dry-run command wrapper and may overwrite a same-named destination file. Do not use it on irreplaceable evidence until both behaviors are fixed.
 
 ## Collecting evidence
 
 ```bash
-./ghostcase.sh collect \
+./tracehold.sh collect \
     --case CASE_ID \
     --profile PROFILE \
     --apply
 ```
 
-Collection profiles are intended to provide reusable sets of environment, software, repository, and system checks.
+The default profile is `default` when `--profile` is omitted.
 
-Planned profiles include:
+Planned profile names currently described by the CLI include:
 
 ```text
 default
@@ -361,166 +418,71 @@ python
 git
 ```
 
-Profile behavior is still being implemented.
+Profile names are not validated, and profile execution is not implemented. The current command only selects the case, records run metadata when applied, and emits debug output when verbose mode is enabled.
 
 ## Verifying a case
 
 ```bash
-./ghostcase.sh verify \
-    --case CASE_ID
-```
-
-The verification workflow is intended to check:
-
-* required directory structure;
-* required manifests;
-* missing or unexpected artifacts;
-* checksum availability;
-* evidence integrity;
-* and consistency between case metadata and stored files.
-
-Full verification behavior is not yet implemented.
-
-## Bundling a case
-
-```bash
-./ghostcase.sh bundle \
+./tracehold.sh verify \
     --case CASE_ID \
     --apply
 ```
 
-The bundle workflow is intended to create a portable `.tar.gz` archive suitable for:
+The intended workflow is to validate:
 
-* engineering handoff;
-* escalation;
-* long-term storage;
-* incident review;
-* and controlled transfer.
+- required directories and artifacts;
+- missing or unexpected files;
+- checksum availability;
+- evidence integrity;
+- and consistency between case metadata and stored files.
 
-Bundling is not yet fully implemented.
+Those checks are not implemented in v1.1.0. Do not interpret a successful `verify` exit as evidence that a case is complete or intact.
+
+## Bundling a case
+
+```bash
+./tracehold.sh bundle \
+    --case CASE_ID \
+    --apply
+```
+
+The intended workflow is to create a portable `.tar.gz` archive for handoff, escalation, storage, review, or controlled transfer.
+
+Archive creation is not implemented in v1.1.0.
 
 ## Execution options
 
-| Option            | Behavior                                           |
-| ----------------- | -------------------------------------------------- |
-| `--apply`         | Perform filesystem changes and commands            |
-| `--dry-run`       | Preview operations without changing the filesystem |
-| `--force`         | Replace generated files after preserving backups   |
-| `-v`, `--verbose` | Enable diagnostic logging                          |
-| `--self-test`     | Run the built-in smoke test                        |
-| `--version`       | Print the current version                          |
-| `-h`, `--help`    | Display command help                               |
+| Option | Behavior |
+|---|---|
+| `--apply` | Perform file writes and commands routed through the controlled helpers |
+| `--dry-run` | Preview routed operations without changing the filesystem; default mode |
+| `--no-load-run` | Legacy alias for `--dry-run` |
+| `--force` | Replace `write_file()`-managed artifacts after timestamped backup |
+| `-v`, `--verbose` | Enable diagnostic logging |
+| `--self-test` | Run the built-in temporary-directory smoke test |
+| `--version` | Print the current version |
+| `-h`, `--help` | Display CLI help |
 
-Dry-run is the default.
+`--force` applies to artifacts managed by `write_file()`. It does not currently protect the direct evidence copy in `add`.
 
-## Generated case structure
+## Path and configuration model
 
-A completed `new` workflow is intended to produce a structure similar to:
-
-```text
-cases/
-├── logs/
-│   ├── run_manifest_<run-id>.txt
-│   └── summary_<run-id>.txt
-│
-└── GC_<timestamp>_<title>/
-    ├── manifest/
-    │   ├── case_manifest.txt
-    │   ├── environment.txt
-    │   ├── software_versions.txt
-    │   └── checksums.sha256
-    │
-    ├── evidence/
-    │   ├── raw/
-    │   ├── photos/
-    │   ├── logs/
-    │   └── operator_notes/
-    │
-    ├── derived/
-    │   ├── timelines/
-    │   ├── extracts/
-    │   └── figures/
-    │
-    ├── commands/
-    │   ├── collection.log
-    │   └── replay.sh
-    │
-    └── reports/
-        ├── initial_triage.md
-        └── handoff.md
-```
-
-### Directory intent
-
-#### `manifest/`
-
-Records case identity, host context, software information, and integrity metadata.
-
-#### `evidence/`
-
-Stores original material collected during the investigation.
-
-Raw evidence should not be silently modified or overwritten.
-
-#### `derived/`
-
-Stores data generated from original evidence, including:
-
-* filtered extracts;
-* reconstructed timelines;
-* plots;
-* figures;
-* and analytical output.
-
-#### `commands/`
-
-Records how evidence was collected, transformed, or reproduced.
-
-The long-term goal is for another engineer to understand and replay the relevant analytical steps.
-
-#### `reports/`
-
-Stores human-readable investigation artifacts such as:
-
-* initial triage;
-* handoff notes;
-* findings;
-* and eventual closure or root-cause reports.
-
-## Initial triage report
-
-The generated initial-triage report is designed to capture:
-
-1. Case control
-2. Executive summary
-3. Safety and containment
-4. Affected scope
-5. Event timeline
-6. Reported behavior
-7. Known facts
-8. Evidence inventory
-9. Evidence limitations
-10. Unknowns
-11. Assumptions
-12. Initial hypotheses
-13. Reproduction plan
-14. Immediate actions
-15. Escalation and handoff
-16. Decision log
-17. Initial-triage exit criteria
-
-The report is intentionally a working document, not a final root-cause conclusion.
-
-## Configuration
-
-Ghostcase supports several environment-level defaults.
-
-### `VEC_ROOT`
-
-Base path for the default engineering workspace:
+At startup, v1.1.0 resolves defaults approximately as follows:
 
 ```bash
-export VEC_ROOT="$HOME/Vec"
+ROOT="${ROOT:-${HOME}/Vec}"
+ENGINEERING_DIR="${ENGINEERING_DIR:-${ROOT}/Engineering}"
+OUTPUT_DIR="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/tracehold/cases}"
+```
+
+The final default assumes the script is named `tracehold.sh`; internally, the directory component is derived from the script filename without `.sh`.
+
+### `ROOT`
+
+Base workspace path:
+
+```bash
+export ROOT="$HOME/Vec"
 ```
 
 ### `ENGINEERING_DIR`
@@ -528,73 +490,204 @@ export VEC_ROOT="$HOME/Vec"
 Engineering workspace root:
 
 ```bash
-export ENGINEERING_DIR="$VEC_ROOT/Engineering"
+export ENGINEERING_DIR="$ROOT/Engineering"
 ```
 
 ### `OUTPUT_DIR`
 
-Override the default case-storage path:
+Default case-storage root:
 
 ```bash
-export OUTPUT_DIR="$HOME/ghostcase-data"
+export OUTPUT_DIR="$HOME/tracehold-data"
 ```
 
-A per-run override may also be supplied:
+A per-run override takes precedence:
 
 ```bash
-./ghostcase.sh new \
-    --output-dir "$HOME/ghostcase-data" \
-    [other options]
+./tracehold.sh new \
+    --output-dir "$HOME/tracehold-data" \
+    --title link_loss \
+    --description "Command link dropped during climb" \
+    --severity P1 \
+    --asset AV-042
 ```
 
 ### `NO_COLOR`
 
-Disable terminal color output:
+Disable ANSI color output:
 
 ```bash
 export NO_COLOR=1
 ```
 
-## Safety model
+## Generated case structure
 
-Ghostcase routes intended side effects through controlled command and file-writing helpers.
+A successful applied `new` workflow currently produces a structure similar to:
 
-The safety model currently includes:
+```text
+cases/
+├── logs/
+├── artifacts/
+└── TH_<run-id>_<title>/
+    ├── manifest/
+    │   ├── run_manifest_<run-id>.txt
+    │   ├── case_manifest_<run-id>.txt
+    │   └── summary_<run-id>.txt
+    ├── evidence/
+    │   ├── raw/
+    │   ├── photos/
+    │   ├── logs/
+    │   └── operator_notes/
+    ├── derived/
+    │   ├── timelines/
+    │   ├── extracts/
+    │   └── figures/
+    ├── commands/
+    │   ├── collection.log
+    │   └── replay.sh
+    └── reports/
+        ├── initial_triage.md
+        └── handoff.md
+```
 
-* dry-run by default;
-* explicit `--apply`;
-* quoted argument handling;
-* array-oriented command execution;
-* optional replacement through `--force`;
-* timestamped backups before replacement;
-* separation of raw and derived evidence;
-* UTC run identifiers;
-* centralized error reporting;
-* and exit cleanup restricted to the root shell process.
+The top-level `logs/` and `artifacts/` directories are created but are not currently populated by the primary workflow.
 
-These controls reduce accidental changes, but they do not replace operator review. Always inspect dry-run output before applying actions to important evidence.
+### `manifest/`
+
+Stores execution and case-control records.
+
+- `run_manifest_<run-id>.txt` — JSON-formatted execution metadata, command state, inputs, and input provenance
+- `case_manifest_<run-id>.txt` — key-value case summary
+- `summary_<run-id>.txt` — key-value workflow status summary
+
+### `evidence/`
+
+Stores original material collected during the investigation.
+
+Raw evidence should not be silently modified or mixed with derived output.
+
+### `derived/`
+
+Stores analytical output generated from original evidence, including:
+
+- filtered extracts;
+- reconstructed timelines;
+- plots;
+- figures;
+- and other transformations.
+
+### `commands/`
+
+Intended to record how evidence was collected, transformed, or reproduced.
+
+In v1.1.0, `collection.log` and `replay.sh` are created with placeholder text.
+
+### `reports/`
+
+Stores human-readable investigation artifacts.
+
+`initial_triage.md` is generated with a detailed working template. `handoff.md` is currently placeholder content.
+
+### Disabled manifest artifacts
+
+The source defines writers for:
+
+```text
+environment.txt
+software_versions.txt
+checksums.sha256
+```
+
+Their calls are commented out in the current `new` workflow, so the files are not generated in v1.1.0.
+
+## Initial triage report
+
+The generated report is explicitly an initial snapshot, not a final root-cause determination.
+
+It contains:
+
+1. Case control
+2. Executive summary
+3. Safety and containment
+4. Scope
+5. Event timeline
+6. Reported behavior
+7. Known facts
+8. Evidence inventory
+9. Evidence quality and limitations
+10. Unknowns
+11. Assumptions requiring validation
+12. Initial hypotheses
+13. Reproduction plan
+14. Immediate actions
+15. Escalation and handoff
+16. Decision log
+17. Exit criteria for initial triage
+
+The template emphasizes observable symptom language, evidence provenance, explicit unknowns, safety disposition, discriminating tests, and a handoff another engineer can continue.
+
+## Safety and execution model
+
+The current runtime includes:
+
+- `set -Eeuo pipefail`;
+- a restricted `IFS`;
+- centralized fatal exits through `hardstop()`;
+- root-shell-only `ERR` reporting;
+- root-shell-only cleanup;
+- dry-run as the default for controlled operations;
+- explicit `--apply` for controlled side effects;
+- array-based command execution instead of `eval`;
+- quoted argument handling;
+- optional replacement through `--force`;
+- timestamped backups before replacement;
+- separate raw and derived directories;
+- and UTC run identifiers.
+
+These controls reduce accidental changes but do not replace operator review, evidence-handling policy, or independent verification.
 
 ## Self-test
 
 Run the built-in smoke test:
 
 ```bash
-./ghostcase.sh --self-test
+./tracehold.sh --self-test
 ```
 
 Include diagnostic output:
 
 ```bash
-./ghostcase.sh --self-test --verbose
+./tracehold.sh --self-test --verbose
 ```
 
-The current self-test exercises the runtime skeleton, manifest generation, summary generation, and basic output assertions. It should not yet be treated as complete command-level test coverage.
+The self-test:
+
+- creates a temporary output directory;
+- forces apply mode inside that temporary directory;
+- exercises `new`, `add`, `collect`, `verify`, and `bundle` branches in one process;
+- checks for the run manifest and summary;
+- and removes the temporary directory after completion.
+
+It is a useful smoke test, not complete command-level coverage. Because all command branches share one process and one run ID, it does not expose every cross-invocation bug present in normal use.
+
+## Known v1.1.0 limitations
+
+1. **`add` manifest validation is run-ID-coupled.** It checks for case and run manifests named with the current invocation's run ID instead of discovering the existing case manifests.
+2. **`add` bypasses dry-run.** Its `cp -a` call is direct rather than routed through `run_cmd()`.
+3. **`add` can overwrite by filename.** A same-named file in the destination evidence directory may be replaced without `--force` backup behavior.
+4. **`collect`, `verify`, and `bundle` are scaffolds.** They do not perform their advertised payload operations.
+5. **Environment, software, and checksum generation are disabled.** The helper calls are commented out.
+6. **Several generated artifacts are placeholders.** This includes `commands/collection.log`, `commands/replay.sh`, and `reports/handoff.md`.
+7. **Case-title sanitization is absent.** Unsafe or awkward title characters flow directly into the case directory name.
+8. **Several fields are not validated.** Timestamp format, profile, reproduction state, status, and confidence accept arbitrary non-option strings.
+9. **The run manifest has a `.txt` extension despite JSON content.**
+10. **The self-test is not independent per command.** Shared process state can hide invocation-boundary defects.
 
 ## Troubleshooting
 
 ### Nothing was created
 
-Ghostcase defaults to dry-run mode.
+Normal operation defaults to dry-run mode.
 
 Add:
 
@@ -602,114 +695,167 @@ Add:
 --apply
 ```
 
-after reviewing the previewed operations.
+after reviewing the planned actions.
 
-### A command is unavailable
+### `jq` is missing
 
-Some environment-collection commands may not be installed on minimal Linux distributions.
-
-Check availability with:
+Install `jq` using the package manager appropriate for the host, then verify:
 
 ```bash
-command -v lsusb
-command -v lspci
-command -v free
+command -v jq
+jq --version
 ```
 
-### `dmesg` reports a permission error
+The current run-manifest builder requires it.
 
-Some systems restrict kernel-log access.
+### The case title created an awkward path
 
-This does not necessarily indicate that the entire case workflow failed. Run the relevant collection with appropriate permissions only when justified by your environment and security policy.
+v1.1.0 does not sanitize `--title`. Prefer a slug:
+
+```bash
+--title intermittent_link_loss
+```
+
+Avoid spaces, slashes, leading dashes, and shell-special characters.
+
+### A multi-value option swallowed later text
+
+`--asset`, `--site`, `--owner`, and `--recent-change` consume values until the next option beginning with `-`.
+
+Correct:
+
+```bash
+--owner "V Halcyon" "RF Engineering" \
+--status "Open — pending triage"
+```
+
+### Values containing spaces were split
+
+Quote each logical value:
+
+```bash
+--description "Link dropped during autonomous climb"
+--owner "V Halcyon"
+--recent-change "Radio firmware updated"
+```
 
 ### The output directory is unexpected
 
-Inspect the active configuration:
+Inspect the environment:
 
 ```bash
-printf '%s\n' "${OUTPUT_DIR:-unset}"
-printf '%s\n' "${ENGINEERING_DIR:-unset}"
-printf '%s\n' "${VEC_ROOT:-unset}"
+printf 'ROOT=%s\n' "${ROOT:-unset}"
+printf 'ENGINEERING_DIR=%s\n' "${ENGINEERING_DIR:-unset}"
+printf 'OUTPUT_DIR=%s\n' "${OUTPUT_DIR:-unset}"
 ```
 
-You may override it with:
+Override it for one run:
 
 ```bash
 --output-dir /desired/path
 ```
 
-### Values containing spaces are split
+### `add` says a manifest is missing
 
-Quote multi-word CLI values:
+This is a known v1.1.0 defect caused by checking for the current invocation's run ID in an existing case. Do not rename evidence or fabricate manifests to bypass the check; fix the validation logic first.
 
-```bash
---description "Link dropped during autonomous climb"
-```
+### `verify` succeeded but did not report checks
+
+The verification payload is not implemented. Current success only means the scaffolded workflow reached completion.
 
 ## Development priorities
 
-Near-term work includes:
+Near-term work should include:
 
-* completing evidence routing for `add`;
-* defining collection-profile behavior;
-* implementing checksum generation and verification;
-* implementing portable case bundles;
-* validating command-specific required arguments;
-* validating enumerated fields such as severity and evidence type;
-* recording collection commands and provenance;
-* expanding self-test coverage;
-* adding fixture-based tests;
-* and stabilizing the case schema.
+1. make `add` discover existing case manifests instead of using the current run ID;
+2. route evidence copies through controlled apply/dry-run helpers;
+3. define collision behavior and backup policy for added evidence;
+4. implement checksum generation and verification;
+5. implement collection-profile behavior;
+6. implement portable archive creation;
+7. replace placeholder artifacts with useful content;
+8. sanitize or validate case-title slugs;
+9. validate timestamps and enumerated fields;
+10. record collection commands and file provenance;
+11. split self-tests into independent command invocations;
+12. add fixture-based positive and negative tests;
+13. run ShellCheck in CI;
+14. stabilize the case schema and manifest extensions.
 
 ## Contributing
 
 Contributions should preserve the project’s core principles:
 
-1. Dry-run should remain the default for side-effecting operations.
-2. Raw evidence should remain distinguishable from derived output.
-3. Commands should use arrays rather than `eval`.
-4. Variables should be quoted unless word splitting is intentional.
-5. New workflows should provide useful failure messages.
-6. New artifacts should have clear provenance.
-7. Documentation should distinguish implemented behavior from planned behavior.
-8. Tests should verify both successful and failed execution paths.
+1. Dry-run remains the default for side-effecting operations.
+2. Every side effect obeys the same apply/dry-run boundary.
+3. Raw evidence remains distinguishable from derived output.
+4. Commands use arrays rather than `eval`.
+5. Variables are quoted unless word splitting is intentional.
+6. New workflows provide useful failure messages.
+7. New artifacts have clear provenance.
+8. Documentation distinguishes implemented behavior from planned behavior.
+9. Tests cover both successful and failed paths.
+10. Evidence collisions are explicit and recoverable.
 
 Before submitting changes:
 
 ```bash
-bash -n ghostcase.sh
-./ghostcase.sh --self-test --verbose
+bash -n tracehold.sh
+./tracehold.sh --help >/dev/null
+./tracehold.sh --self-test --verbose
 ```
 
-Recommended additional checks:
+Recommended additional static analysis:
 
 ```bash
-shellcheck ghostcase.sh
+shellcheck tracehold.sh
+```
+
+For a temporary end-to-end `new` test:
+
+```bash
+tmp_dir="$(mktemp -d)"
+
+./tracehold.sh new \
+    --title smoke_case \
+    --description "Documentation smoke test" \
+    --severity P4 \
+    --asset TEST-001 \
+    --output-dir "$tmp_dir" \
+    --apply
+
+find "$tmp_dir" -maxdepth 4 -print
+rm -rf "$tmp_dir"
 ```
 
 ## Security and evidence handling
 
-Ghostcase may collect system information, logs, identifiers, operational notes, and other potentially sensitive evidence.
+`tracehold` may collect system information, logs, identifiers, operational notes, photographs, and other sensitive evidence.
 
-Before sharing or bundling a case:
+Before sharing or eventually bundling a case:
 
-* review the included files;
-* remove secrets and credentials;
-* check logs for tokens or personal information;
-* verify that export is authorized;
-* preserve an unmodified internal copy where required;
-* and follow the applicable data-retention and incident-handling policies.
+- review every included file;
+- remove secrets and credentials from export copies;
+- check logs for tokens, keys, and personal information;
+- verify that transfer is authorized;
+- preserve an unmodified internal copy where required;
+- document any redaction or transformation;
+- and follow applicable retention and incident-handling policies.
 
-Ghostcase does not currently provide automatic secret detection or redaction.
+`tracehold` does not currently provide automatic secret detection, redaction, encryption, access control, or secure deletion.
 
 ## License
 
 No license has been selected yet.
 
-Until a license is added, do not assume permission to copy, modify, or redistribute the project outside the rights provided by applicable law.
+Until a license is added, do not assume permission to copy, modify, or redistribute the project beyond rights provided by applicable law.
 
 ---
 
-**Ghostcase**
+**TRACEHOLD**
 
-Observe directly. Validate physically. Debug iteratively.
+Evidence preserved.  
+Assumptions documented.  
+Unknowns clearly identified.
+
+Maintain the trace until the evidence supports a conclusion.
