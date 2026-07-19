@@ -292,6 +292,16 @@ backup_if_exists() {
     run_cmd cp -a "$path" "$backup"
 }
 
+copy_evidence() {
+	local file_name="$1"
+	local file_path="$2"
+	local target_dir="$3"
+
+	run_cmd backup_if_exists "$target_dir/$file_name"
+	run_cmd cp -a "$file_path" "$target_dir/$file_name"
+
+}
+
 # --- Safe file writing -------------------------------------------------------
 
 write_file() {
@@ -1604,7 +1614,13 @@ parse_args() {
     sync_variadic_inputs
 }
 
-# --- Configuration validation ------------------------------------------------
+# =============================================================================
+# endregion S7. CLI
+# =============================================================================
+
+# =============================================================================
+# region S7a. Validate config
+# =============================================================================
 
 validate_config() {
     local command_count
@@ -1630,8 +1646,13 @@ validate_config() {
         (( WAS_SET[SEVERITY] )) || hardstop "Input --severity required" "$EX_USAGE"
         (( WAS_SET[ASSET] )) || hardstop "Input --asset required" "$EX_USAGE"
 
+		# ensure title and severity are defined inputs
+		[[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+			|| hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
         [[ "${INPUT[SEVERITY]}" =~ ^P[0-4]$ ]] \
             || hardstop "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4" "$EX_USAGE"
+		[[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
+			|| hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
 
         INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
 		log "Generated Case-ID: ${INPUT[CASE]}"
@@ -1642,10 +1663,20 @@ validate_config() {
     (( WAS_SET[TITLE] == 0 )) || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
     (( WAS_SET[CASE] )) || hardstop "Input --case required" "$EX_USAGE"
 
+	# run case-id globbing in subshell w/ strict nullglob
+	(
+		shopt -s nullglob
+		[[ ${INPUT[CASE]} == "$CASE_PREFIX"_*_*_UTC_* ]] \
+		|| hardstop "Case-ID must be of the format ${CASE_PREFIX}_<run-id>_<title>" "$EX_USAGE"
+	)
+
 	# all other commands require a valid/existing case-id directory + manifests
 	assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
-    assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_*.txt"
-	assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_*.txt"
+	compgen -G "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_*.txt" > /dev/null \
+		|| hardstop "No case manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
+	compgen -G "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_*.txt" > /dev/null \
+		|| hardstop "No run manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
+
 
 	# validate 'add' workflow
     if (( COMMANDS[ADD] )); then
@@ -1653,7 +1684,6 @@ validate_config() {
         (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
 
 		# file must exist & type must be a valid option
-
 		for file in "${FILES[@]}"; do
 			debug "Verifying input files exist: $file"
 			assert_file_exists "$file"
@@ -1687,7 +1717,7 @@ validate_config() {
 }
 
 # =============================================================================
-# endregion S7. CLI
+# endregion S7a. Validate config
 # =============================================================================
 
 # =============================================================================
@@ -1732,15 +1762,26 @@ run_workflow() {
     fi
 
     if (( COMMANDS[ADD] )); then
-        debug "Adding ${INPUT[TYPE]} file: ${INPUT[FILE]} to ${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
-
 			for file in "${FILES[@]}"; do
+				file_path="$(realpath "$file")"
+				file_name="$(basename "$file")"
+				debug "file_path: $file_path"
+				debug "file_name: $file_name"
+
             	case "${INPUT[TYPE]}" in
-					raw) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw";;
-					photo) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos";;
-					log)  run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs";;
-					note) run_cmd cp -a "$file" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes";;
-					*) warn "Unknown file type. Available: 'raw','photo','log','note'" ;;
+					raw)
+						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
+					;;
+					photo)
+						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos"
+					;;
+					log)
+						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs"
+					;;
+					note)
+					 	copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes"
+					;;
+					*) hardstop "Unknown file type. Available: 'raw','photo','log','note'" "$EX_USAGE" ;;
 				esac
 			done
     fi
