@@ -32,7 +32,7 @@
 
 # --- Metadata ----------------------------------------------------------------
 
-VERSION="1.1.0"
+VERSION="2.0.0"
 AUTHOR="V Halcyon"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -44,6 +44,11 @@ RUN_ID="$(date -u +"%Y%m%d_%H%M%S_UTC")"
 ROOT="${ROOT:-${HOME}/Vec}"
 ENGINEERING_DIR="${ENGINEERING_DIR:-${ROOT}/Engineering}"
 CASE_PREFIX="TH"
+
+# --- Derived runtime paths ----------------------------------------------------
+
+CASE_DIR=""
+MANIFEST_DIR=""
 
 # --- Input tracking ----------------------------------------------------------
 
@@ -293,13 +298,81 @@ backup_if_exists() {
 }
 
 copy_evidence() {
-	local file_name="$1"
-	local file_path="$2"
-	local target_dir="$3"
+    local file_name="${1:?copy_evidence requires a file name}"
+    local file_path="${2:?copy_evidence requires an absolute file path}"
+    local target_dir="${3:?copy_evidence requires a target directory}"
+    local target_path="${target_dir}/${file_name}"
 
-	run_cmd backup_if_exists "$target_dir/$file_name"
-	run_cmd cp -a "$file_path" "$target_dir/$file_name"
+    ensure_dir "$target_dir"
 
+    if [[ -e "$target_path" || -L "$target_path" ]]; then
+        (( SCRIPT[FORCE] )) \
+            || hardstop "Evidence already exists: $target_path  Use --force to preserve a backup and replace it." "$EX_CANTCREAT"
+        backup_if_exists "$target_path"
+    fi
+
+    run_cmd cp -a -- "$file_path" "$target_path"
+}
+
+find_latest_manifest() {
+    local manifest_dir="${1:?find_latest_manifest requires a manifest directory}"
+    local manifest_type="${2:?find_latest_manifest requires a manifest type}"
+    local current_run_id="${3:?find_latest_manifest requires a current run ID}"
+
+    local path
+    local filename
+    local timestamp
+    local latest_path=""
+    local latest_timestamp=""
+    local -a candidates=()
+
+    shopt -s nullglob
+    candidates=( "${manifest_dir}/${manifest_type}_"*.txt )
+    shopt -u nullglob
+
+    for path in "${candidates[@]}"; do
+        filename="${path##*/}"
+        timestamp="${filename#"${manifest_type}_"}"
+        timestamp="${timestamp%.txt}"
+
+        debug "Manifest candidate: <$path>"
+        debug "Extracted manifest timestamp: <$timestamp>"
+
+        [[ "$timestamp" =~ ^[0-9]{8}_[0-9]{6}_UTC$ ]] || {
+            debug "Skipping malformed timestamp: <$timestamp>"
+            continue
+        }
+
+        [[ "$timestamp" < "$current_run_id" ]] || {
+            debug "Skipping current or newer timestamp: <$timestamp>"
+            continue
+        }
+
+        if [[ -z "$latest_timestamp" || "$timestamp" > "$latest_timestamp" ]]; then
+            latest_timestamp="$timestamp"
+            latest_path="$path"
+            debug "Updated latest manifest: <$latest_path>"
+        fi
+    done
+
+    [[ -n "$latest_path" ]] || return 1
+
+    # Function contract: stdout contains only the selected path.
+    printf '%s\n' "$latest_path"
+}
+
+resolve_state() {
+    if (( COMMANDS[NEW] )); then
+        INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
+    fi
+
+    [[ -n "${INPUT[CASE]}" ]] || return 0
+
+    CASE_DIR="${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
+    MANIFEST_DIR="${CASE_DIR}/manifest"
+
+    debug "Resolved case directory: <$CASE_DIR>"
+    debug "Resolved manifest directory: <$MANIFEST_DIR>"
 }
 
 # --- Safe file writing -------------------------------------------------------
@@ -675,6 +748,10 @@ verify_checksums() {
 initial_triage() {
     info "Building initial_triage report"
     local path="${1:?initial_triage requires an output path}"
+    local case_id title description severity asset site case_status profile
+    local reported_by owner first_observed last_observed operational_impact
+    local reproduction_status containment_status affected_scope recent_change
+    local confidence generated_utc
 
     # -------------------------------------------------------------------------
     # region T1. Resolve report values
@@ -1112,14 +1189,14 @@ used.
 
 Commands:
 	new       Create a case directory and initial triage artifacts.
-	add       Copy one evidence file into an existing case. Experimental.
+	add       Copy one or more evidence files into an existing case. Experimental.
 	collect   Collection-profile scaffold; collection is not implemented yet.
 	verify    Verification scaffold; integrity checks are not implemented yet.
 	bundle    Archive scaffold; .tar.gz creation is not implemented yet.
 
 Command syntax:
 	tracehold new REQUIRED_OPTIONS [CASE_OPTIONS] [EXECUTION_OPTIONS]
-	tracehold add --case CASE_ID --file PATH --type TYPE [COMMON_OPTIONS]
+	tracehold add --case CASE_ID --file PATH [PATH ...] --type TYPE [COMMON_OPTIONS]
 	tracehold collect --case CASE_ID [--profile NAME] [COMMON_OPTIONS]
 	tracehold verify --case CASE_ID [COMMON_OPTIONS]
 	tracehold bundle --case CASE_ID [COMMON_OPTIONS]
@@ -1222,8 +1299,8 @@ Required:
 	--case CASE_ID
 		Existing case directory name beneath the selected output directory.
 
-	--file PATH
-		One existing regular file to copy.
+	--file PATH [PATH ...]
+		One or more existing regular files to copy.
 
 	--type raw|photo|log|note
 		Destination evidence class:
@@ -1239,11 +1316,10 @@ Example:
 		--type log \
 		--apply
 
-Important v1.1.0 limitation:
-	The add workflow is not yet safe for production evidence. Its current
-	manifest validation is tied to the new invocation's run ID, and its copy
-	operation is not routed through the dry-run helper. Do not rely on dry-run
-	protection for add until those issues are corrected.
+Important v2.0.0 behavior:
+	Existing evidence is never replaced silently. A filename collision stops the
+	operation unless --force is supplied; forced replacement preserves a
+	timestamped backup first. Dry-run remains the default.
 
 ────────────────────────────────────────────────────────────────────────
 COLLECT / VERIFY / BUNDLE — SCAFFOLDED
@@ -1317,8 +1393,6 @@ CURRENT NEW-CASE OUTPUT
 ────────────────────────────────────────────────────────────────────────
 
 	cases/
-	├── logs/
-	├── artifacts/
 	└── TH_<run-id>_<title>/
 		├── manifest/
 		│   ├── run_manifest_<run-id>.txt
@@ -1624,6 +1698,9 @@ parse_args() {
 
 validate_config() {
     local command_count
+    local latest_run_manifest
+    local latest_case_manifest
+    local file
 
     debug "running validate_config..."
 
@@ -1634,83 +1711,95 @@ validate_config() {
         + COMMANDS[VERIFY]
         + COMMANDS[BUNDLE]
     ))
-	debug "command_count: $command_count"
+    debug "command_count: $command_count"
 
-    (( command_count == 1 )) || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
+    (( command_count == 1 )) \
+        || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
 
-	# validate 'new' workflow
+    [[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
+        || hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
+
     if (( COMMANDS[NEW] )); then
-        (( WAS_SET[CASE] == 0 )) || hardstop "--case cannot be used with the 'new' command" "$EX_USAGE"
-        (( WAS_SET[TITLE] )) || hardstop "Input --title required"  "$EX_USAGE"
-        (( WAS_SET[DESCRIPTION] )) || hardstop "Input --description required" "$EX_USAGE"
-        (( WAS_SET[SEVERITY] )) || hardstop "Input --severity required" "$EX_USAGE"
-        (( WAS_SET[ASSET] )) || hardstop "Input --asset required" "$EX_USAGE"
+        (( WAS_SET[CASE] == 0 )) \
+            || hardstop "--case cannot be used with the 'new' command" "$EX_USAGE"
+        (( WAS_SET[TITLE] )) \
+            || hardstop "Input --title required" "$EX_USAGE"
+        (( WAS_SET[DESCRIPTION] )) \
+            || hardstop "Input --description required" "$EX_USAGE"
+        (( WAS_SET[SEVERITY] )) \
+            || hardstop "Input --severity required" "$EX_USAGE"
+        (( WAS_SET[ASSET] )) \
+            || hardstop "Input --asset required" "$EX_USAGE"
 
-		# ensure title and severity are defined inputs
-		[[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-			|| hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
+        [[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+            || hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
         [[ "${INPUT[SEVERITY]}" =~ ^P[0-4]$ ]] \
             || hardstop "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4" "$EX_USAGE"
-		[[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
-			|| hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
 
-        INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
-		log "Generated Case-ID: ${INPUT[CASE]}"
+        [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
+            || hardstop "Internal state resolution failed for new case" "$EX_SOFTWARE"
+
+        log "Generated Case-ID: ${INPUT[CASE]}"
         return 0
     fi
 
-	# all other commands require case-id and NOT title
-    (( WAS_SET[TITLE] == 0 )) || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
-    (( WAS_SET[CASE] )) || hardstop "Input --case required" "$EX_USAGE"
+    (( WAS_SET[TITLE] == 0 )) \
+        || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
+    (( WAS_SET[CASE] )) \
+        || hardstop "Input --case required" "$EX_USAGE"
 
-	# run case-id globbing in subshell w/ strict nullglob
-	(
-		shopt -s nullglob
-		[[ ${INPUT[CASE]} == "$CASE_PREFIX"_*_*_UTC_* ]] \
-		|| hardstop "Case-ID must be of the format ${CASE_PREFIX}_<run-id>_<title>" "$EX_USAGE"
-	)
+    [[ "${INPUT[CASE]}" == "${CASE_PREFIX}"_*_*_UTC_* ]] \
+        || hardstop "Case-ID must be of the format ${CASE_PREFIX}_<run-id>_<title>" "$EX_USAGE"
 
-	# all other commands require a valid/existing case-id directory + manifests
-	assert_dir_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
-	compgen -G "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_*.txt" > /dev/null \
-		|| hardstop "No case manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
-	compgen -G "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_*.txt" > /dev/null \
-		|| hardstop "No run manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
+    [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
+        || hardstop "Internal state resolution failed for existing case" "$EX_SOFTWARE"
 
+    assert_dir_exists "$CASE_DIR"
+    assert_dir_exists "$MANIFEST_DIR"
 
-	# validate 'add' workflow
+    latest_run_manifest="$(
+        find_latest_manifest "$MANIFEST_DIR" "run_manifest" "$RUN_ID"
+    )" || hardstop "No prior run manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
+
+    latest_case_manifest="$(
+        find_latest_manifest "$MANIFEST_DIR" "case_manifest" "$RUN_ID"
+    )" || hardstop "No prior case manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
+
+    assert_file_exists "$latest_run_manifest"
+    assert_file_exists "$latest_case_manifest"
+
+    debug "Latest prior run manifest: <$latest_run_manifest>"
+    debug "Latest prior case manifest: <$latest_case_manifest>"
+
     if (( COMMANDS[ADD] )); then
-		(( WAS_SET[FILE] )) || hardstop "Input --file required" "$EX_USAGE"
-        (( WAS_SET[TYPE] )) || hardstop "Input --type required" "$EX_USAGE"
+        (( WAS_SET[FILE] )) \
+            || hardstop "Input --file required" "$EX_USAGE"
+        (( WAS_SET[TYPE] )) \
+            || hardstop "Input --type required" "$EX_USAGE"
 
-		# file must exist & type must be a valid option
-		for file in "${FILES[@]}"; do
-			debug "Verifying input files exist: $file"
-			assert_file_exists "$file"
-		done
+        for file in "${FILES[@]}"; do
+            debug "Verifying input file exists: <$file>"
+            assert_file_exists "$file"
+        done
 
         case "${INPUT[TYPE]}" in
             raw|photo|log|note)
-				log "File type validated: ${INPUT[TYPE]}";
-				return 0;;
-            *) hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" "$EX_IOERR" ;;
+                log "File type validated: ${INPUT[TYPE]}"
+                ;;
+            *)
+                hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" "$EX_IOERR"
+                ;;
         esac
-
-
-
     fi
 
-	# validate 'collect' workflow
     if (( COMMANDS[COLLECT] )); then
         debug "Running validate_config COLLECT"
     fi
 
-	# validate 'verify' workflow
     if (( COMMANDS[VERIFY] )); then
         debug "Running validate_config VERIFY"
     fi
 
-	# validate 'bundle' workflow
     if (( COMMANDS[BUNDLE] )); then
         debug "Running validate_config BUNDLE"
     fi
@@ -1727,38 +1816,42 @@ validate_config() {
 # --- Main workflow -----------------------------------------------------------
 
 run_workflow() {
+    local file
+    local file_path
+    local file_name
+
     info "Run ID: $RUN_ID"
 
-    make_run_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_${RUN_ID}.txt"
+    make_run_manifest "${MANIFEST_DIR}/run_manifest_${RUN_ID}.txt"
 
     if (( COMMANDS[NEW] )); then
 		debug "Case_ID set: ${INPUT[CASE]}"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest"
+        ensure_dir "${CASE_DIR}"
+        ensure_dir "$MANIFEST_DIR"
 
-        make_case_manifest "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/case_manifest_${RUN_ID}.txt"
-        #environment_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/environment.txt"
-        #software_check "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/software_versions.txt"
-        #verify_checksums  "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/checksums.sha256"
+        make_case_manifest "${MANIFEST_DIR}/case_manifest_${RUN_ID}.txt"
+        #environment_check "${CASE_DIR}/manifest/environment.txt"
+        #software_check "${CASE_DIR}/manifest/software_versions.txt"
+        #verify_checksums  "${CASE_DIR}/manifest/checksums.sha256"
 
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes"
+        ensure_dir "${CASE_DIR}/evidence"
+        ensure_dir "${CASE_DIR}/evidence/raw"
+        ensure_dir "${CASE_DIR}/evidence/photos"
+        ensure_dir "${CASE_DIR}/evidence/logs"
+        ensure_dir "${CASE_DIR}/evidence/operator_notes"
 
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/timelines"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/extracts"
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/derived/figures"
+        ensure_dir "${CASE_DIR}/derived"
+        ensure_dir "${CASE_DIR}/derived/timelines"
+        ensure_dir "${CASE_DIR}/derived/extracts"
+        ensure_dir "${CASE_DIR}/derived/figures"
 
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands"
-        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/collection.log" "test collection.log"
-        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/commands/replay.sh" "test replay.sh"
+        ensure_dir "${CASE_DIR}/commands"
+        write_file "${CASE_DIR}/commands/collection.log" "test collection.log"
+        write_file "${CASE_DIR}/commands/replay.sh" "test replay.sh"
 
-        ensure_dir "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports"
-        initial_triage "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/initial_triage.md"
-        write_file "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/reports/handoff.md" "test handoff.md"
+        ensure_dir "${CASE_DIR}/reports"
+        initial_triage "${CASE_DIR}/reports/initial_triage.md"
+        write_file "${CASE_DIR}/reports/handoff.md" "test handoff.md"
     fi
 
     if (( COMMANDS[ADD] )); then
@@ -1770,16 +1863,16 @@ run_workflow() {
 
             	case "${INPUT[TYPE]}" in
 					raw)
-						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/raw"
+						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/raw"
 					;;
 					photo)
-						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/photos"
+						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/photos"
 					;;
 					log)
-						copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/logs"
+						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/logs"
 					;;
 					note)
-					 	copy_evidence "$file_name" "$file_path" "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/evidence/operator_notes"
+					 	copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/operator_notes"
 					;;
 					*) hardstop "Unknown file type. Available: 'raw','photo','log','note'" "$EX_USAGE" ;;
 				esac
@@ -1798,118 +1891,58 @@ run_workflow() {
         debug "${COMMANDS[BUNDLE]}"
     fi
 
-    write_summary "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/summary_${RUN_ID}.txt" "ok"
+    write_summary "${MANIFEST_DIR}/summary_${RUN_ID}.txt" "ok"
     log "tracehold: workflow complete"
 }
 
 # --- Self-test ---------------------------------------------------------------
 
 run_self_test() {
-	debug "run_self_test executing..."
-    local tmp_dir old_apply old_output
+    local tmp_dir
+    local expected_case_dir
+    local old_apply="${SCRIPT[APPLY]}"
+    local old_output_dir="${INPUT[OUTPUT_DIR]}"
+
+    debug "run_self_test executing..."
+
     tmp_dir="$(mktemp -d)"
-    info "Self-test temp dir: $tmp_dir"
-    old_apply="${SCRIPT[APPLY]}"
-    old_output="${INPUT[OUTPUT_DIR]}"
+    trap 'rm -rf "$tmp_dir"' RETURN
 
-	SCRIPT[APPLY]=1
+    SCRIPT[APPLY]=1
     INPUT[OUTPUT_DIR]="$tmp_dir"
-    INPUT[PROFILE]="${INPUT[PROFILE]:-default}"
+    INPUT[TITLE]="self_test"
+    INPUT[DESCRIPTION]="Tracehold v2 smoke test"
+    INPUT[SEVERITY]="P4"
+    INPUT[ASSET]="A_000"
 
-    info "Output Directory: ${INPUT[OUTPUT_DIR]}"
-    info "Input Path: ${INPUT[PROFILE]}"
+    WAS_SET[TITLE]=1
+    WAS_SET[DESCRIPTION]=1
+    WAS_SET[SEVERITY]=1
+    WAS_SET[ASSET]=1
 
-	for set in "${!WAS_SET[@]}"; do
-		debug "WAS_SET: $set - ${WAS_SET[$set]}"
-	done
+    COMMANDS[NEW]=1
+    COMMANDS[ADD]=0
+    COMMANDS[COLLECT]=0
+    COMMANDS[VERIFY]=0
+    COMMANDS[BUNDLE]=0
 
-	for option in "${!INPUT[@]}"; do
-		debug "INPUT: $option- ${INPUT[$option]}"
-	done
+    resolve_state
+    validate_config
+    run_workflow
 
-	for setting in "${!SCRIPT[@]}"; do
-		debug "SCRIPT: $setting - ${SCRIPT[$setting]}"
-	done
-
-	for key in "${!COMMAND_KEYS[@]}"; do
-		debug "$key"
-		case $key in
-			0|NEW)
-				debug "running 'new' self-test..."
-				COMMANDS[NEW]=1
-
-				WAS_SET[CASE]=0
-				WAS_SET[TITLE]=1
-				WAS_SET[DESCRIPTION]=1
-				WAS_SET[SEVERITY]=1
-				WAS_SET[ASSET]=1
-
-				INPUT[TITLE]="self_test"
-				INPUT[DESCRIPTION]="this is a self-test run for smoke-test/functionality only"
-				INPUT[SEVERITY]="P4"
-				INPUT[ASSET]="A_000"
-			;;
-
-			1|ADD)
-				debug "running 'add' self-test..."
-				COMMANDS[NEW]=0
-				COMMANDS[ADD]=1
-
-				WAS_SET[TITLE]=0
-				WAS_SET[CASE]=1
-				WAS_SET[FILE]=1
-				WAS_SET[TYPE]=1
-
-				INPUT[TYPE]=raw
-
-				if (( SCRIPT[SELF_TEST] )); then
-					[[ -f "${INPUT[OUTPUT_DIR]}/input_test_file_1.txt" && \
-					   -f "${INPUT[OUTPUT_DIR]}/input_test_file_2.txt" ]] || { \
-
-					touch "${INPUT[OUTPUT_DIR]}/input_test_file_1.txt"
-					touch "${INPUT[OUTPUT_DIR]}/input_test_file_2.txt"
-					log "Created ${INPUT[OUTPUT_DIR]}/input_test_files.txt"
-					}
-				fi
-
-				INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
-				FILES+=("${INPUT[OUTPUT_DIR]}/input_test_file_1.txt")
-				FILES+=("${INPUT[OUTPUT_DIR]}/input_test_file_2.txt")
-				sync_variadic_inputs
-			;;
-
-			2|COLLECT)
-				debug "running 'collect' self-test..."
-				COMMANDS[ADD]=0
-				COMMANDS[COLLECT]=1
-
-				WAS_SET[PROFILE]=1
-			;;
-
-			3|VERIFY)
-				debug "running 'verify' self-test..."
-				COMMANDS[COLLECT]=0
-				COMMANDS[VERIFY]=1
-			;;
-
-			4|BUNDLE)
-				debug "running 'bundle' self-test..."
-				COMMANDS[VERIFY]=0
-				COMMANDS[BUNDLE]=1
-			;;
-		esac
-
-		validate_config
-		run_workflow
-		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/run_manifest_${RUN_ID}.txt"
-		assert_file_exists "${INPUT[OUTPUT_DIR]}/${INPUT[CASE]}/manifest/summary_${RUN_ID}.txt"
-
-	done
+    expected_case_dir="$CASE_DIR"
+    assert_dir_exists "$expected_case_dir"
+    assert_file_exists "${MANIFEST_DIR}/run_manifest_${RUN_ID}.txt"
+    assert_file_exists "${MANIFEST_DIR}/case_manifest_${RUN_ID}.txt"
+    assert_file_exists "${MANIFEST_DIR}/summary_${RUN_ID}.txt"
+    assert_file_exists "${CASE_DIR}/reports/initial_triage.md"
 
     SCRIPT[APPLY]="$old_apply"
-    INPUT[OUTPUT_DIR]="$old_output"
+    INPUT[OUTPUT_DIR]="$old_output_dir"
 
-	rm -rf "$tmp_dir"
+    rm -rf "$tmp_dir"
+    trap - RETURN
+
     log "Self-test passed"
 }
 
@@ -1926,6 +1959,7 @@ main() {
     install_runtime
 
     parse_args "$@"
+    resolve_state
 
     if (( SCRIPT[SELF_TEST] )); then
         run_self_test
