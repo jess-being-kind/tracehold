@@ -1701,8 +1701,9 @@ validate_config() {
     local latest_run_manifest
     local latest_case_manifest
     local file
+    local case_regex
 
-    debug "running validate_config..."
+     info "running validate_config..."
 
     command_count=$((
         COMMANDS[NEW]
@@ -1743,13 +1744,29 @@ validate_config() {
         return 0
     fi
 
+    # All other commands require the following conditions:
     (( WAS_SET[TITLE] == 0 )) \
         || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
     (( WAS_SET[CASE] )) \
         || hardstop "Input --case required" "$EX_USAGE"
 
-    [[ "${INPUT[CASE]}" == "${CASE_PREFIX}"_*_*_UTC_* ]] \
-        || hardstop "Case-ID must be of the format ${CASE_PREFIX}_<run-id>_<title>" "$EX_USAGE"
+
+    case_regex="^${CASE_PREFIX}_[0-9]{8}_[0-9]{6}_UTC_[A-Za-z0-9_.-]*$"
+    if [[ "${INPUT[CASE]}" =~ $case_regex ]]; then
+        debug "Case-ID validated: <${INPUT[CASE]}>"
+    else
+        regex_status=$?
+
+    if (( regex_status == 2 )); then
+        hardstop \
+            "Internal error: invalid Case-ID regex <$case_regex>" \
+            "$EX_SOFTWARE"
+    fi
+
+        hardstop \
+            "Invalid Case-ID <${INPUT[CASE]}>; expected ${CASE_PREFIX}_YYYYMMDD_HHMMSS_UTC_title" \
+            "$EX_USAGE"
+    fi
 
     [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
         || hardstop "Internal state resolution failed for existing case" "$EX_SOFTWARE"
@@ -1770,6 +1787,7 @@ validate_config() {
 
     debug "Latest prior run manifest: <$latest_run_manifest>"
     debug "Latest prior case manifest: <$latest_case_manifest>"
+    # end universal conditions
 
     if (( COMMANDS[ADD] )); then
         (( WAS_SET[FILE] )) \
@@ -1778,8 +1796,8 @@ validate_config() {
             || hardstop "Input --type required" "$EX_USAGE"
 
         for file in "${FILES[@]}"; do
-            debug "Verifying input file exists: <$file>"
             assert_file_exists "$file"
+            debug "Verifying input file exists: <$file>"
         done
 
         case "${INPUT[TYPE]}" in
@@ -1794,6 +1812,13 @@ validate_config() {
 
     if (( COMMANDS[COLLECT] )); then
         debug "Running validate_config COLLECT"
+        (( WAS_SET[PROFILE] )) \
+            || warn "No input --profile chosen, setting 'default'";
+
+        case "${INPUT[PROFILE]}" in
+            default|general|environment) info "${INPUT[PROFILE]}" selected ;;
+            *) hardstop "Unknown profile selected: ${INPUT[PROFILE]}; expected default, general, or environment" "$EX_USAGE" ;;
+        esac
     fi
 
     if (( COMMANDS[VERIFY] )); then
