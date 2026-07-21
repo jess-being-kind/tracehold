@@ -7,9 +7,15 @@
 # A Bash tool for turning ambiguous field failures into structured,
 # timestamped, integrity-conscious engineering case files.
 #
-# Flow:
-#   parse_args -> resolve_state -> validate_config -> run_workflow
-#                            \-> self_test
+# Primary flow:
+#   main
+#     -> parse_args
+#     -> resolve_state
+#     -> validate_config
+#     -> run_workflow
+#
+# Early adapters:
+#   __complete / --completion bash / --help / --version / --self-test
 #
 # Tracehold is designed to:
 # - preserve evidence before it disappears or is altered;
@@ -21,16 +27,31 @@
 #
 # Principle:
 #   Hold the evidence. Keep the context. Find the truth.
+#
+# Reading map:
+#   S0  Configuration and shared schema
+#   S1  Runtime services and diagnostics
+#   S2  Core data and validation primitives
+#   S3  Command execution and filesystem persistence
+#   S4  Runtime state resolution
+#   S5  Manifest and report generation
+#   S6  CLI contract rendering and help
+#   S7  Bash programmable completion
+#   S8  Argument parsing
+#   S9  Configuration validation
+#   S10 Command workflows
+#   S11 Self-test
+#   S12 Entrypoint
 
 # =============================================================================
 # endregion Script overview
 # =============================================================================
 
 # =============================================================================
-# region S0. Metadata and globals
+# region S0. Configuration, state, and shared CLI schema
 # =============================================================================
 
-# --- Metadata ----------------------------------------------------------------
+# --- S0.1 Identity and immutable run metadata --------------------------------
 
 VERSION="1.1.0"
 AUTHOR="V Halcyon"
@@ -39,20 +60,20 @@ SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
 RUN_ID="$(date -u +"%Y%m%d_%H%M%S_UTC")"
 
-# --- Directory and case defaults ---------------------------------------------
+# --- S0.2 Workspace and case defaults ----------------------------------------
 
 ROOT="${ROOT:-${HOME}/Vec}"
 ENGINEERING_DIR="${ENGINEERING_DIR:-${ROOT}/Engineering}"
 CASE_PREFIX="TH"
 
-# --- Derived runtime paths ----------------------------------------------------
+# --- S0.3 Derived case paths --------------------------------------------------
 
 CASE_DIR=""
 MANIFEST_DIR=""
 LATEST_RUN_MANIFEST=""
 LATEST_CASE_MANIFEST=""
 
-# --- Input tracking ----------------------------------------------------------
+# --- S0.4 Input provenance tracking ------------------------------------------
 
 declare -A WAS_SET=(
     # Case description
@@ -91,7 +112,7 @@ declare -A WAS_SET=(
     [VERBOSE]=0
 )
 
-# --- Variadic inputs ---------------------------------------------------------
+# --- S0.5 Variadic input buffers ---------------------------------------------
 
 declare -a ASSETS=()
 declare -a SITES=()
@@ -99,26 +120,26 @@ declare -a OWNERS=()
 declare -a RECENT_CHANGES=()
 declare -a FILES=()
 
-# --- Input defaults ----------------------------------------------------------
+# --- S0.6 Canonical input state ----------------------------------------------
 
 declare -A INPUT=(
     # Case description
     [TITLE]="new_case_set_title"
     [DESCRIPTION]="No description provided"
-	[ASSET]=""
+    [ASSET]=""
     [SEVERITY]="P4"
-	[SITE]=""
+    [SITE]=""
 
     # Ownership and timeline
     [REPORTED_BY]="Unknown"
-	[OWNER]=""
-	[FIRST_OBSERVED]="Unknown"
+    [OWNER]=""
+    [FIRST_OBSERVED]="Unknown"
     [LAST_OBSERVED]="Unknown"
 
     # Triage state
     [OPERATIONAL_IMPACT]="Not yet assessed"
     [AFFECTED_SCOPE]="Unknown"
-	[RECENT_CHANGE]=""
+    [RECENT_CHANGE]=""
     [STATUS]="Open — pending initial triage"
     [REPRO_STATUS]="Not attempted"
     [CONTAINMENT_STATUS]="Not yet documented"
@@ -127,12 +148,12 @@ declare -A INPUT=(
     # Case and evidence selection
     [PROFILE]="default"
     [CASE]=""
-	[FILE]=""
+    [FILE]=""
     [TYPE]=""
     [OUTPUT_DIR]="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
 )
 
-# --- Execution settings ------------------------------------------------------
+# --- S0.7 Execution-mode state -----------------------------------------------
 
 declare -A SCRIPT=(
     [APPLY]=0
@@ -141,7 +162,7 @@ declare -A SCRIPT=(
     [SELF_TEST]=0
 )
 
-# --- Shared command and option schema ----------------------------------------
+# --- S0.8 Shared command contract --------------------------------------------
 #
 # This is the single source of truth for parsing, required/allowed option
 # validation, generated help, and programmable completion. Add or change a CLI
@@ -197,12 +218,20 @@ declare -A COMMAND_REQUIRED=(
 )
 
 declare -A COMMAND_ALLOWED=(
-    [NEW]="TITLE DESCRIPTION ASSET SEVERITY SITE REPORTED_BY OWNER FIRST_OBSERVED LAST_OBSERVED OPERATIONAL_IMPACT AFFECTED_SCOPE RECENT_CHANGE STATUS REPRO_STATUS CONTAINMENT_STATUS TRIAGE_CONFIDENCE PROFILE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
+    [NEW]="TITLE DESCRIPTION ASSET SEVERITY SITE REPORTED_BY OWNER \
+FIRST_OBSERVED LAST_OBSERVED OPERATIONAL_IMPACT AFFECTED_SCOPE \
+RECENT_CHANGE STATUS REPRO_STATUS CONTAINMENT_STATUS TRIAGE_CONFIDENCE \
+PROFILE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
     [ADD]="CASE FILE TYPE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
     [COLLECT]="CASE PROFILE OUTPUT_DIR APPLY DRY_RUN VERBOSE"
     [VERIFY]="CASE OUTPUT_DIR APPLY DRY_RUN VERBOSE"
     [BUNDLE]="CASE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
 )
+
+# --- S0.9 Shared option contract ---------------------------------------------
+#
+# Each option key maps its public spelling, parser kind, destination, provenance
+# flag, optional enum values, and help/completion metavar.
 
 declare -A OPTION_CLI=(
     [TITLE]="--title"
@@ -376,13 +405,21 @@ declare -A OPTION_METAVAR=(
     [OUTPUT_DIR]="DIR"
 )
 
+# Mutable command-selection state is initialized from COMMAND_KEYS so the
+# command registry and runtime flags cannot drift apart.
 declare -A COMMANDS=()
 for command_key in "${COMMAND_KEYS[@]}"; do
     COMMANDS["$command_key"]=0
 done
 unset command_key
 
-# --- Error codes -------------------------------------------------------------
+# --- S0.10 Runtime trap state -----------------------------------------------
+
+ROOT_BASHPID=""
+ERROR_REPORTED=0
+CLEANUP_RAN=0
+
+# --- S0.11 Process exit codes ------------------------------------------------
 
 readonly EX_GENERAL=1
 readonly EX_USAGE=64
@@ -395,26 +432,36 @@ readonly EX_IOERR=74
 readonly EX_CONFIG=78
 
 # =============================================================================
-# endregion S0. Metadata and globals
+# endregion S0. Configuration, state, and shared CLI schema
 # =============================================================================
 
 # =============================================================================
-# region S1. Logging and errors
+# region S1. Runtime services and diagnostics
 # =============================================================================
 
-# --- Logging -----------------------------------------------------------------
+# --- S1.1 Terminal logging -----------------------------------------------
 
 supports_color() { [[ -t 1 && "${NO_COLOR:-}" == "" ]]; }
+
 _color() { supports_color && printf '\033[%sm' "$1" || true; }
+
 _reset() { supports_color && printf '\033[0m' || true; }
 
 log()   { printf "%s[OK]%s %s\n" "$(_color '1;32')" "$(_reset)" "$*"; }
+
 info()  { printf "%s[INFO]%s %s\n" "$(_color '1;34')" "$(_reset)" "$*"; }
+
 warn()  { printf "%s[WARN]%s %s\n" "$(_color '1;33')" "$(_reset)" "$*" >&2; }
+
 err()   { printf "%s[ERR]%s %s\n" "$(_color '1;31')" "$(_reset)" "$*" >&2; }
+
 debug() { (( SCRIPT[VERBOSE] )) && printf "%s[DEBUG]%s %s\n" "$(_color '0;36')" "$(_reset)" "$*" >&2 || true; }
+
 timestamp() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
 
+# --- S1.2 Fatal errors ---------------------------------------------------
+
+# Exit immediately with a sysexits-style code and one operator-facing message.
 hardstop() {
     local message="${1:-Fatal error}"
     local exit_code="${2:-1}"
@@ -429,12 +476,10 @@ hardstop() {
     exit "$exit_code"
 }
 
-# --- Runtime error handling --------------------------------------------------
+# --- S1.3 Strict-mode and trap lifecycle ---------------------------------
 
-ROOT_BASHPID=""
-ERROR_REPORTED=0
-CLEANUP_RAN=0
-
+# Strict mode is installed only for normal execution, after completion/meta
+# adapters have had a chance to return cleanly.
 install_runtime() {
     set -Eeuo pipefail
     IFS=$'\n\t'
@@ -445,6 +490,8 @@ install_runtime() {
     trap 'cleanup "$?"' EXIT
 }
 
+# Report only the root-shell failure; command substitutions may raise their
+# own ERR events and would otherwise duplicate the diagnostic.
 on_error() {
     local status="$1"
     local line="$2"
@@ -467,6 +514,7 @@ on_error() {
     printf '    function: %s\n' "${FUNCNAME[1]:-main}" >&2
 }
 
+# Cleanup is idempotent and root-shell-only so nested shells cannot race it.
 cleanup() {
     local status="$1"
 
@@ -489,17 +537,24 @@ cleanup() {
 }
 
 # =============================================================================
-# endregion S1. Logging and errors
+# endregion S1. Runtime services and diagnostics
 # =============================================================================
 
 # =============================================================================
-# region S2. Validation helpers
+# region S2. Core data and validation primitives
 # =============================================================================
 
+# --- S2.1 Preconditions and environment helpers --------------------------
+
+# Small fail-fast guards used by validation and V&V code.
 require_command() { command -v "$1" >/dev/null 2>&1 || hardstop "Missing required command: $1" "$EX_NOINPUT"; }
+
 assert_file_exists() { [[ -f "$1" ]] || hardstop "Expected file does not exist: $1" "$EX_DATAERR"; }
+
 assert_dir_exists() { [[ -d "$1" ]] || hardstop "Expected directory does not exist: $1" "$EX_DATAERR"; }
+
 is_positive_integer() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
+
 is_yes() { case "${1,,}" in y|yes|true|1|on) return 0 ;; *) return 1 ;; esac; }
 
 path_prepend() {
@@ -508,18 +563,61 @@ path_prepend() {
     case ":$PATH:" in *":$dir:"*) ;; *) export PATH="$dir:$PATH" ;; esac
 }
 
+# --- S2.2 Text and list helpers ------------------------------------------
+
+# These helpers serialize variadic CLI buffers into the existing manifest
+# representation. They intentionally do not change the file format.
+join_by() {
+    local delimiter="$1"; shift || true
+    local first=1 item
+    for item in "$@"; do
+        if (( first )); then printf "%s" "$item"; first=0; else printf "%s%s" "$delimiter" "$item"; fi
+    done
+}
+
+split_csv() {
+    local csv="${1:-}" item
+    IFS=',' read -r -a _items <<< "$csv"
+    for item in "${_items[@]}"; do
+        item="${item#${item%%[![:space:]]*}}"
+        item="${item%${item##*[![:space:]]}}"
+        [[ -n "$item" ]] && printf "%s\n" "$item"
+    done
+}
+
 # =============================================================================
-# endregion S2. Validation helpers
+# endregion S2. Core data and validation primitives
 # =============================================================================
 
 # =============================================================================
-# region S3. Path and file helpers
+# region S3. Command execution and filesystem persistence
 # =============================================================================
 
-# --- Directory helpers -------------------------------------------------------
+# --- S3.1 Dry-run execution adapter --------------------------------------
+
+# Filesystem mutations routed through run_cmd inherit Tracehold's dry-run
+# contract. capture_cmd is reserved for commands whose stdout is data.
+run_cmd() {
+    if (( SCRIPT[APPLY] )); then
+        debug "RUN: $(printf '%q ' "$@")"
+        "$@"
+    else
+        printf "[DRY RUN] "
+        printf "%q " "$@"
+        printf "\n"
+    fi
+}
+
+capture_cmd() {
+    debug "CAPTURE: $(printf '%q ' "$@")"
+    "$@"
+}
+
+# --- S3.2 Generic filesystem writers -------------------------------------
 
 ensure_dir() { run_cmd mkdir -p "$1"; }
 
+# Existing generated artifacts are retained beside their replacement.
 backup_if_exists() {
     local path="$1"
     [[ -e "$path" || -L "$path" ]] || return 0
@@ -528,6 +626,53 @@ backup_if_exists() {
     run_cmd cp -a "$path" "$backup"
 }
 
+# write_file is the atomic writer used by generated Tracehold artifacts.
+write_file() {
+    local path="$1"
+    local content="$2"
+    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]] && (( SCRIPT[SELF_TEST] == 0 )); then
+        warn "File exists, skipping: $path  Use --force to replace after backup."
+        return 0
+	elif [[ -e "$path" && "${SCRIPT[SELF_TEST]}" -eq 1 ]]; then
+		info "Appending self-test manifest to existing manifest file: $path"
+    fi
+    ensure_dir "$(dirname "$path")"
+    [[ -e "$path" || -L "$path" ]] && backup_if_exists "$path"
+    if (( SCRIPT[APPLY] )); then
+        local tmp="${path}.tmp.$$"
+		if (( SCRIPT[SELF_TEST] && !COMMANDS[NEW])); then
+			cp -a "$path" "$tmp"
+			printf "%s" "$content" >> "$tmp"
+			log "Appended to $path"
+		else
+			printf "%s" "$content" > "$tmp"
+			log "Wrote $path"
+		fi
+		mv "$tmp" "$path"
+    else
+        printf "[DRY RUN] write %q\n" "$path"
+    fi
+}
+
+write_file_stream() {
+    local path="$1"
+    local content
+    content="$(cat)"
+    write_file "$path" "$content"$'\n'
+}
+
+append_unique_line() {
+    local line="${1:?append_unique_line requires content}"
+    local file="${2:?append_unique_line requires a file}"
+
+    grep -Fqx -- "$line" "$file" 2>/dev/null ||
+        printf '%s\n' "$line" >> "$file"
+}
+
+# --- S3.3 Evidence ingestion ---------------------------------------------
+
+# Preserve the current source-hash, intermediate-copy, and destination-copy
+# sequence. Integrity/provenance upgrades remain separate roadmap work.
 copy_evidence() {
     local file_name="${1:?copy_evidence requires a file name}"
     local file_path="${2:?copy_evidence requires an absolute file path}"
@@ -539,7 +684,9 @@ copy_evidence() {
 
     if [[ -e "$target_path" || -L "$target_path" ]]; then
         (( SCRIPT[FORCE] )) \
-            || hardstop "Evidence already exists: $target_path  Use --force to preserve a backup and replace it." "$EX_CANTCREAT"
+            || hardstop \
+                "Evidence already exists: $target_path  Use --force to preserve a backup and replace it." \
+                "$EX_CANTCREAT"
         backup_if_exists "$target_path"
     fi
 
@@ -549,6 +696,9 @@ copy_evidence() {
     run_cmd cp -a -- "$file_path" "$target_path"
 }
 
+# --- S3.4 Persistent-state discovery -------------------------------------
+
+# Select the newest well-formed prior manifest older than the current run.
 find_latest_manifest() {
     local manifest_dir="${1:?find_latest_manifest requires a manifest directory}"
     local manifest_type="${2:?find_latest_manifest requires a manifest type}"
@@ -596,6 +746,17 @@ find_latest_manifest() {
     printf '%s\n' "$latest_path"
 }
 
+# =============================================================================
+# endregion S3. Command execution and filesystem persistence
+# =============================================================================
+
+# =============================================================================
+# region S4. Runtime state resolution
+# =============================================================================
+
+# --- S4.1 Derived case paths ---------------------------------------------
+
+# Convert parsed intent into CASE_DIR/MANIFEST_DIR once, before validation.
 resolve_state() {
     if (( COMMANDS[NEW] )); then
         INPUT[CASE]="${CASE_PREFIX}_${RUN_ID}_${INPUT[TITLE]}"
@@ -610,110 +771,17 @@ resolve_state() {
     debug "Resolved manifest directory: <$MANIFEST_DIR>"
 }
 
-# --- Safe file writing -------------------------------------------------------
-
-write_file() {
-    local path="$1"
-    local content="$2"
-    if [[ -e "$path" && "${SCRIPT[FORCE]}" -ne 1 ]] && (( SCRIPT[SELF_TEST] == 0 )); then
-        warn "File exists, skipping: $path  Use --force to replace after backup."
-        return 0
-	elif [[ -e "$path" && "${SCRIPT[SELF_TEST]}" -eq 1 ]]; then
-		info "Appending self-test manifest to existing manifest file: $path"
-    fi
-    ensure_dir "$(dirname "$path")"
-    [[ -e "$path" || -L "$path" ]] && backup_if_exists "$path"
-    if (( SCRIPT[APPLY] )); then
-        local tmp="${path}.tmp.$$"
-		if (( SCRIPT[SELF_TEST] && !COMMANDS[NEW])); then
-			cp -a "$path" "$tmp"
-			printf "%s" "$content" >> "$tmp"
-			log "Appended to $path"
-		else
-			printf "%s" "$content" > "$tmp"
-			log "Wrote $path"
-		fi
-		mv "$tmp" "$path"
-    else
-        printf "[DRY RUN] write %q\n" "$path"
-    fi
-}
-
-write_file_stream() {
-    local path="$1"
-    local content
-    content="$(cat)"
-    write_file "$path" "$content"$'\n'
-}
-
-append_unique_line() {
-    local line="${1:?append_unique_line requires content}"
-    local file="${2:?append_unique_line requires a file}"
-
-    grep -Fqx -- "$line" "$file" 2>/dev/null ||
-        printf '%s\n' "$line" >> "$file"
-}
-
 # =============================================================================
-# endregion S3. Path and file helpers
+# endregion S4. Runtime state resolution
 # =============================================================================
 
 # =============================================================================
-# region S4. Command execution
+# region S5. Manifest and report generation
 # =============================================================================
 
-run_cmd() {
-    if (( SCRIPT[APPLY] )); then
-        debug "RUN: $(printf '%q ' "$@")"
-        "$@"
-    else
-        printf "[DRY RUN] "
-        printf "%q " "$@"
-        printf "\n"
-    fi
-}
+# --- S5.1 Machine-readable run context -----------------------------------
 
-capture_cmd() {
-    debug "CAPTURE: $(printf '%q ' "$@")"
-    "$@"
-}
-
-# =============================================================================
-# endregion S4. Command execution
-# =============================================================================
-
-# =============================================================================
-# region S5. Text and list helpers
-# =============================================================================
-
-join_by() {
-    local delimiter="$1"; shift || true
-    local first=1 item
-    for item in "$@"; do
-        if (( first )); then printf "%s" "$item"; first=0; else printf "%s%s" "$delimiter" "$item"; fi
-    done
-}
-
-split_csv() {
-    local csv="${1:-}" item
-    IFS=',' read -r -a _items <<< "$csv"
-    for item in "${_items[@]}"; do
-        item="${item#${item%%[![:space:]]*}}"
-        item="${item%${item##*[![:space:]]}}"
-        [[ -n "$item" ]] && printf "%s\n" "$item"
-    done
-}
-
-# =============================================================================
-# endregion S5. Text and list helpers
-# =============================================================================
-
-# =============================================================================
-# region S6. Manifest and summary helpers
-# =============================================================================
-
-# --- Run manifest ------------------------------------------------------------
-
+# The run manifest captures invocation state and option provenance.
 make_run_manifest() {
     debug "running make_run_manifest"
 
@@ -916,7 +984,7 @@ make_run_manifest() {
     write_file "$path" "${manifest}"$'\n'
 }
 
-# --- Case manifest -----------------------------------------------------------
+# --- S5.2 Case-level records ---------------------------------------------
 
 make_case_manifest() {
     debug "running make_case_manifest"
@@ -935,8 +1003,10 @@ make_case_manifest() {
 	CASE_MANIFEST
 }
 
-# --- Environment snapshot ----------------------------------------------------
+# --- S5.3 Planned snapshot writers ---------------------------------------
 
+# These functions are retained as explicit scaffolds and are not called by
+# the v1.1.0 NEW workflow.
 environment_check() {
     debug "running environment_check"
     local path="$1"
@@ -954,8 +1024,6 @@ environment_check() {
 	ENVIRONMENT_CHECK
 }
 
-# --- Software snapshot -------------------------------------------------------
-
 software_check() {
     debug "Software check placeholder ONLY"
     local path="$1"
@@ -966,8 +1034,6 @@ software_check() {
 
 	SOFTWARE_CHECK
 }
-
-# --- Checksum verification ---------------------------------------------------
 
 verify_checksums() {
     debug "Checksum placeholder ONLY"
@@ -980,16 +1046,10 @@ verify_checksums() {
 	VERIFY_CHECKSUM
 }
 
-# =============================================================================
-# endregion S6. Manifest and summary helpers
-# =============================================================================
+# --- S5.4 Human-readable investigation reports ---------------------------
 
-# =============================================================================
-# region S6a. Report generation
-# =============================================================================
-
-# --- Write initial triage report ---------------------------------------------
-
+# initial_triage intentionally stays verbose: the generated report is an
+# operational worksheet, not merely a compact program output.
 initial_triage() {
     info "Building initial_triage report"
     local path="${1:?initial_triage requires an output path}"
@@ -1380,7 +1440,7 @@ initial_triage() {
     # -------------------------------------------------------------------------
 }
 
-# --- Run summary -------------------------------------------------------------
+# --- S5.5 Run summary ----------------------------------------------------
 
 write_summary() {
     local path="$1"
@@ -1395,14 +1455,14 @@ write_summary() {
 }
 
 # =============================================================================
-# endregion S6A. Report generation
+# endregion S5. Manifest and report generation
 # =============================================================================
 
 # =============================================================================
-# region S7. CLI
+# region S6. CLI contract rendering and help
 # =============================================================================
 
-# --- Shared command-contract helpers -----------------------------------------
+# --- S6.1 Shared-schema queries ------------------------------------------
 
 command_count() {
     local command_key
@@ -1446,6 +1506,8 @@ word_in_schema_list() {
 
     return 1
 }
+
+# --- S6.2 Generated contract presentation --------------------------------
 
 format_contract_option() {
     local option_key="${1:?format_contract_option requires an option key}"
@@ -1522,249 +1584,10 @@ print_command_contracts() {
     done
 }
 
-# --- Programmable completion -------------------------------------------------
+# --- S6.3 Full operator help ---------------------------------------------
 
-print_bash_completion() {
-    cat <<'BASH_COMPLETION'
-# Bash programmable completion for Tracehold.
-# Generated by: tracehold --completion bash
-
-_tracehold() {
-    local executable="${COMP_WORDS[0]}"
-    local mode
-    local -a response=()
-
-    mapfile -t response < <(
-        "$executable" __complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null
-    )
-
-    mode="${response[0]-}"
-    case "$mode" in
-        __TRACEHOLD_VALUES__)
-            compopt +o bashdefault +o default 2>/dev/null || true
-            COMPREPLY=( "${response[@]:1}" )
-            ;;
-        __TRACEHOLD_FILES__)
-            compopt -o filenames
-            COMPREPLY=( "${response[@]:1}" )
-            ;;
-        __TRACEHOLD_DIRS__)
-            compopt -o filenames
-            COMPREPLY=( "${response[@]:1}" )
-            ;;
-        __TRACEHOLD_NONE__)
-            compopt +o bashdefault +o default 2>/dev/null || true
-            COMPREPLY=()
-            ;;
-        *)
-            COMPREPLY=()
-            ;;
-    esac
-}
-
-complete -o bashdefault -o default -F _tracehold \
-    tracehold tracehold.sh ./tracehold.sh
-BASH_COMPLETION
-}
-
-completion_option_is_present() {
-    local target_key="${1:?completion_option_is_present requires an option key}"
-    local cword="${2:?completion_option_is_present requires COMP_CWORD}"
-    shift 2
-    local -a words=( "$@" )
-    local i token token_key
-
-    for (( i = 1; i < cword; i++ )); do
-        token="${words[i]-}"
-        [[ -n "$token" ]] || continue
-        token_key="${OPTION_KEY_BY_CLI[$token]-}"
-        [[ "$token_key" == "$target_key" ]] && return 0
-    done
-
-    return 1
-}
-
-completion_option_has_value() {
-    local target_key="${1:?completion_option_has_value requires an option key}"
-    local cword="${2:?completion_option_has_value requires COMP_CWORD}"
-    shift 2
-    local -a words=( "$@" )
-    local i token token_key
-
-    for (( i = 1; i < cword; i++ )); do
-        token="${words[i]-}"
-        [[ -n "$token" ]] || continue
-        token_key="${OPTION_KEY_BY_CLI[$token]-}"
-        if [[ "$token_key" == "$target_key" ]]; then
-            if (( i + 1 < cword )) &&
-               [[ -n "${words[i + 1]-}" ]] &&
-               [[ "${words[i + 1]}" != -* ]]; then
-                return 0
-            fi
-        fi
-    done
-
-    return 1
-}
-
-completion_option_satisfied() {
-    local option_key="${1:?completion_option_satisfied requires an option key}"
-    local cword="${2:?completion_option_satisfied requires COMP_CWORD}"
-    shift 2
-    local kind="${OPTION_KIND[$option_key]}"
-
-    case "$kind" in
-        flag_true|flag_false)
-            completion_option_is_present "$option_key" "$cword" "$@"
-            ;;
-        *)
-            completion_option_has_value "$option_key" "$cword" "$@"
-            ;;
-    esac
-}
-
-completion_output_dir() {
-    local cword="${1:?completion_output_dir requires COMP_CWORD}"
-    shift
-    local -a words=( "$@" )
-    local output_dir="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
-    local i token token_key
-
-    for (( i = 1; i < cword; i++ )); do
-        token="${words[i]-}"
-        [[ -n "$token" ]] || continue
-        token_key="${OPTION_KEY_BY_CLI[$token]-}"
-        if [[ "$token_key" == "OUTPUT_DIR" ]] && (( i + 1 < cword )); then
-            output_dir="${words[i + 1]}"
-            break
-        fi
-    done
-
-    case "$output_dir" in
-        '~') output_dir="$HOME" ;;
-        '~/'*) output_dir="$HOME/${output_dir#~/}" ;;
-    esac
-
-    printf '%s\n' "$output_dir"
-}
-
-completion_emit_values() {
-    local current="${1-}"
-    shift || true
-    local candidate
-
-    printf '__TRACEHOLD_VALUES__\n'
-    for candidate in "$@"; do
-        [[ "$candidate" == "$current"* ]] && printf '%s\n' "$candidate"
-    done
-}
-
-complete_cli() {
-    local cword="${1-}"
-    shift || true
-    local -a words=( "$@" )
-    local current previous command_key option_key kind output_dir path
-    local -a candidates=()
-    local i
-
-    [[ "$cword" =~ ^[0-9]+$ ]] || return 0
-
-    current="${words[cword]-}"
-    previous="${words[cword - 1]-}"
-    command_key=""
-
-    for (( i = 1; i < cword; i++ )); do
-        [[ -n "${words[i]-}" ]] || continue
-        if [[ -n "${COMMAND_KEY_BY_NAME[${words[i]}]-}" ]]; then
-            command_key="${COMMAND_KEY_BY_NAME[${words[i]}]}"
-            break
-        fi
-    done
-
-    if [[ "$previous" == "--completion" ]]; then
-        completion_emit_values "$current" bash
-        return 0
-    fi
-
-    if [[ -z "$command_key" ]]; then
-        candidates=( new add collect verify bundle --help --version --self-test --completion )
-        completion_emit_values "$current" "${candidates[@]}"
-        return 0
-    fi
-
-    option_key=""
-    if [[ -n "$previous" ]]; then
-        option_key="${OPTION_KEY_BY_CLI[$previous]-}"
-    fi
-    if [[ -n "$option_key" ]]; then
-        kind="${OPTION_KIND[$option_key]}"
-        case "$kind" in
-            enum)
-                IFS=' ' read -r -a candidates <<< "${OPTION_ENUM[$option_key]}"
-                completion_emit_values "$current" "${candidates[@]}"
-                return 0
-                ;;
-            case)
-                output_dir="$(completion_output_dir "$cword" "${words[@]}")"
-                candidates=()
-                if [[ -d "$output_dir" ]]; then
-                    shopt -s nullglob
-                    for path in "$output_dir"/"${CASE_PREFIX}"_*; do
-                        [[ -d "$path" ]] || continue
-                        candidates+=( "${path##*/}" )
-                    done
-                    shopt -u nullglob
-                fi
-                completion_emit_values "$current" "${candidates[@]}"
-                return 0
-                ;;
-            file_variadic)
-                printf '__TRACEHOLD_FILES__\n'
-                compgen -f -- "$current"
-                return 0
-                ;;
-            dir)
-                printf '__TRACEHOLD_DIRS__\n'
-                compgen -d -- "$current"
-                return 0
-                ;;
-            scalar|variadic)
-                printf '__TRACEHOLD_NONE__\n'
-                return 0
-                ;;
-        esac
-    fi
-
-    local -a required_options=() allowed_options=()
-    IFS=' ' read -r -a required_options <<< "${COMMAND_REQUIRED[$command_key]}"
-    IFS=' ' read -r -a allowed_options <<< "${COMMAND_ALLOWED[$command_key]}"
-
-    for option_key in "${required_options[@]}"; do
-        if ! completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
-            completion_emit_values "$current" "${OPTION_CLI[$option_key]}"
-            return 0
-        fi
-    done
-
-    candidates=()
-    for option_key in "${allowed_options[@]}"; do
-        if [[ "$option_key" == "APPLY" || "$option_key" == "DRY_RUN" ]]; then
-            if completion_option_is_present APPLY "$cword" "${words[@]}" ||
-               completion_option_is_present DRY_RUN "$cword" "${words[@]}"; then
-                continue
-            fi
-        elif completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
-            continue
-        fi
-
-        candidates+=( "${OPTION_CLI[$option_key]}" )
-    done
-
-    completion_emit_values "$current" "${candidates[@]}"
-}
-
-# --- Usage text --------------------------------------------------------------
-
+# Long-form usage text provides operational context; command/option summary
+# blocks inside it are generated from the same schema used by parsing.
 usage() {
     local banner="TRACEHOLD v${VERSION}"
     local banner_width=70
@@ -2053,7 +1876,272 @@ Operator principle:
 USAGE
 }
 
-# --- CLI helpers -------------------------------------------------------------
+# =============================================================================
+# endregion S6. CLI contract rendering and help
+# =============================================================================
+
+# =============================================================================
+# region S7. Bash programmable completion
+# =============================================================================
+
+# --- S7.1 Shell adapter generator ----------------------------------------
+
+# The emitted adapter delegates decisions back to Tracehold, keeping the
+# installed completion thin and the command schema authoritative.
+print_bash_completion() {
+    cat <<'BASH_COMPLETION'
+# Bash programmable completion for Tracehold.
+# Generated by: tracehold --completion bash
+
+_tracehold() {
+    local executable="${COMP_WORDS[0]}"
+    local mode
+    local -a response=()
+
+    mapfile -t response < <(
+        "$executable" __complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null
+    )
+
+    mode="${response[0]-}"
+    case "$mode" in
+        __TRACEHOLD_VALUES__)
+            compopt +o bashdefault +o default 2>/dev/null || true
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_FILES__)
+            compopt -o filenames
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_DIRS__)
+            compopt -o filenames
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_NONE__)
+            compopt +o bashdefault +o default 2>/dev/null || true
+            COMPREPLY=()
+            ;;
+        *)
+            COMPREPLY=()
+            ;;
+    esac
+}
+
+complete -o bashdefault -o default -F _tracehold \
+    tracehold tracehold.sh ./tracehold.sh
+BASH_COMPLETION
+}
+
+# --- S7.2 Completion-state inspection ------------------------------------
+
+completion_option_is_present() {
+    local target_key="${1:?completion_option_is_present requires an option key}"
+    local cword="${2:?completion_option_is_present requires COMP_CWORD}"
+    shift 2
+    local -a words=( "$@" )
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        [[ "$token_key" == "$target_key" ]] && return 0
+    done
+
+    return 1
+}
+
+completion_option_has_value() {
+    local target_key="${1:?completion_option_has_value requires an option key}"
+    local cword="${2:?completion_option_has_value requires COMP_CWORD}"
+    shift 2
+    local -a words=( "$@" )
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        if [[ "$token_key" == "$target_key" ]]; then
+            if (( i + 1 < cword )) &&
+               [[ -n "${words[i + 1]-}" ]] &&
+               [[ "${words[i + 1]}" != -* ]]; then
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+completion_option_satisfied() {
+    local option_key="${1:?completion_option_satisfied requires an option key}"
+    local cword="${2:?completion_option_satisfied requires COMP_CWORD}"
+    shift 2
+    local kind="${OPTION_KIND[$option_key]}"
+
+    case "$kind" in
+        flag_true|flag_false)
+            completion_option_is_present "$option_key" "$cword" "$@"
+            ;;
+        *)
+            completion_option_has_value "$option_key" "$cword" "$@"
+            ;;
+    esac
+}
+
+completion_output_dir() {
+    local cword="${1:?completion_output_dir requires COMP_CWORD}"
+    shift
+    local -a words=( "$@" )
+    local output_dir="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        if [[ "$token_key" == "OUTPUT_DIR" ]] && (( i + 1 < cword )); then
+            output_dir="${words[i + 1]}"
+            break
+        fi
+    done
+
+    case "$output_dir" in
+        '~') output_dir="$HOME" ;;
+        '~/'*) output_dir="$HOME/${output_dir#~/}" ;;
+    esac
+
+    printf '%s\n' "$output_dir"
+}
+
+# --- S7.3 Completion response backend ------------------------------------
+
+completion_emit_values() {
+    local current="${1-}"
+    shift || true
+    local candidate
+
+    printf '__TRACEHOLD_VALUES__\n'
+    for candidate in "$@"; do
+        [[ "$candidate" == "$current"* ]] && printf '%s\n' "$candidate"
+    done
+}
+
+# Output begins with a private mode sentinel consumed by the generated Bash
+# adapter; normal users should never need to call __complete directly.
+complete_cli() {
+    local cword="${1-}"
+    shift || true
+    local -a words=( "$@" )
+    local current previous command_key option_key kind output_dir path
+    local -a candidates=()
+    local i
+
+    [[ "$cword" =~ ^[0-9]+$ ]] || return 0
+
+    current="${words[cword]-}"
+    previous="${words[cword - 1]-}"
+    command_key=""
+
+    for (( i = 1; i < cword; i++ )); do
+        [[ -n "${words[i]-}" ]] || continue
+        if [[ -n "${COMMAND_KEY_BY_NAME[${words[i]}]-}" ]]; then
+            command_key="${COMMAND_KEY_BY_NAME[${words[i]}]}"
+            break
+        fi
+    done
+
+    if [[ "$previous" == "--completion" ]]; then
+        completion_emit_values "$current" bash
+        return 0
+    fi
+
+    if [[ -z "$command_key" ]]; then
+        candidates=( new add collect verify bundle --help --version --self-test --completion )
+        completion_emit_values "$current" "${candidates[@]}"
+        return 0
+    fi
+
+    option_key=""
+    if [[ -n "$previous" ]]; then
+        option_key="${OPTION_KEY_BY_CLI[$previous]-}"
+    fi
+    if [[ -n "$option_key" ]]; then
+        kind="${OPTION_KIND[$option_key]}"
+        case "$kind" in
+            enum)
+                IFS=' ' read -r -a candidates <<< "${OPTION_ENUM[$option_key]}"
+                completion_emit_values "$current" "${candidates[@]}"
+                return 0
+                ;;
+            case)
+                output_dir="$(completion_output_dir "$cword" "${words[@]}")"
+                candidates=()
+                if [[ -d "$output_dir" ]]; then
+                    shopt -s nullglob
+                    for path in "$output_dir"/"${CASE_PREFIX}"_*; do
+                        [[ -d "$path" ]] || continue
+                        candidates+=( "${path##*/}" )
+                    done
+                    shopt -u nullglob
+                fi
+                completion_emit_values "$current" "${candidates[@]}"
+                return 0
+                ;;
+            file_variadic)
+                printf '__TRACEHOLD_FILES__\n'
+                compgen -f -- "$current"
+                return 0
+                ;;
+            dir)
+                printf '__TRACEHOLD_DIRS__\n'
+                compgen -d -- "$current"
+                return 0
+                ;;
+            scalar|variadic)
+                printf '__TRACEHOLD_NONE__\n'
+                return 0
+                ;;
+        esac
+    fi
+
+    local -a required_options=() allowed_options=()
+    IFS=' ' read -r -a required_options <<< "${COMMAND_REQUIRED[$command_key]}"
+    IFS=' ' read -r -a allowed_options <<< "${COMMAND_ALLOWED[$command_key]}"
+
+    for option_key in "${required_options[@]}"; do
+        if ! completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
+            completion_emit_values "$current" "${OPTION_CLI[$option_key]}"
+            return 0
+        fi
+    done
+
+    candidates=()
+    for option_key in "${allowed_options[@]}"; do
+        if [[ "$option_key" == "APPLY" || "$option_key" == "DRY_RUN" ]]; then
+            if completion_option_is_present APPLY "$cword" "${words[@]}" ||
+               completion_option_is_present DRY_RUN "$cword" "${words[@]}"; then
+                continue
+            fi
+        elif completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
+            continue
+        fi
+
+        candidates+=( "${OPTION_CLI[$option_key]}" )
+    done
+
+    completion_emit_values "$current" "${candidates[@]}"
+}
+
+# =============================================================================
+# endregion S7. Bash programmable completion
+# =============================================================================
+
+# =============================================================================
+# region S8. Argument parsing and input normalization
+# =============================================================================
+
+# --- S8.1 Scalar and variadic assignment ---------------------------------
 
 set_cli_value() {
     local option="$1"
@@ -2064,7 +2152,10 @@ set_cli_value() {
     local -n was_set="$was_set_name"
 
     [[ -n "$value" ]] || hardstop "Missing value for ${option}" "$EX_IOERR"
-    [[ "$value" != -* ]] || hardstop "Missing value for ${option}; found option '${value}' instead" "$EX_IOERR"
+    [[ "$value" != -* ]] \
+        || hardstop \
+            "Missing value for ${option}; found option '${value}' instead" \
+            "$EX_IOERR"
 
     destination="$value"
     was_set=1
@@ -2091,6 +2182,8 @@ collect_cli_values() {
     was_set=1
     CLI_VALUES_CONSUMED="$count"
 }
+
+# --- S8.2 Schema-directed token parsing ----------------------------------
 
 select_command() {
     local command="${1:?select_command requires a command}"
@@ -2142,6 +2235,10 @@ parse_schema_option() {
     esac
 }
 
+# --- S8.3 Canonical input synchronization --------------------------------
+
+# Variadic arrays remain the parser-facing representation; INPUT receives
+# the joined values expected by current manifests and reports.
 sync_variadic_inputs() {
     if (( WAS_SET[ASSET] )); then
         INPUT[ASSET]="$(join_by ', ' "${ASSETS[@]}")"
@@ -2159,13 +2256,15 @@ sync_variadic_inputs() {
         INPUT[RECENT_CHANGE]="$(join_by ', ' "${RECENT_CHANGES[@]}")"
     fi
 
-	if (( WAS_SET[FILE] )); then
-		INPUT[FILE]="$(join_by ', ' "${FILES[@]}")"
-	fi
+    if (( WAS_SET[FILE] )); then
+        INPUT[FILE]="$(join_by ', ' "${FILES[@]}")"
+    fi
 }
 
-# --- Argument parsing --------------------------------------------------------
+# --- S8.4 Top-level argument loop ----------------------------------------
 
+# The parser handles schema options first, command words second, then the
+# small set of global meta-options that do not belong to a command contract.
 parse_args() {
     local CLI_VALUES_CONSUMED=0
     local PARSE_TOKENS_CONSUMED=0
@@ -2195,8 +2294,7 @@ parse_args() {
                 exit 0
                 ;;
             --version)
-                printf '%s
-' "$VERSION"
+                printf '%s\n' "$VERSION"
                 exit 0
                 ;;
             -h|--help)
@@ -2221,6 +2319,16 @@ parse_args() {
     sync_variadic_inputs
 }
 
+# =============================================================================
+# endregion S8. Argument parsing and input normalization
+# =============================================================================
+
+# =============================================================================
+# region S9. Configuration validation
+# =============================================================================
+
+# --- S9.1 Shared-schema validation ---------------------------------------
+
 validate_command_contract() {
     local command_key option_key
     local -a required_options=() allowed_options=()
@@ -2233,14 +2341,18 @@ validate_command_contract() {
 
     for option_key in "${required_options[@]}"; do
         option_is_set "$option_key" \
-            || hardstop "Input ${OPTION_CLI[$option_key]} required for '${COMMAND_NAME[$command_key]}'" "$EX_USAGE"
+            || hardstop \
+                "Input ${OPTION_CLI[$option_key]} required for '${COMMAND_NAME[$command_key]}'" \
+                "$EX_USAGE"
     done
 
     for option_key in "${OPTION_KEYS[@]}"; do
         option_is_set "$option_key" || continue
 
         word_in_schema_list "$option_key" "${COMMAND_ALLOWED[$command_key]}" \
-            || hardstop "${OPTION_CLI[$option_key]} is not valid with the '${COMMAND_NAME[$command_key]}' command" "$EX_USAGE"
+            || hardstop \
+                "${OPTION_CLI[$option_key]} is not valid with the '${COMMAND_NAME[$command_key]}' command" \
+                "$EX_USAGE"
     done
 }
 
@@ -2268,55 +2380,48 @@ validate_enum_options() {
         done
 
         (( matched )) \
-            || hardstop "Invalid ${OPTION_CLI[$option_key]} '${value}'; expected one of: ${allowed}" "$EX_USAGE"
+            || hardstop \
+                "Invalid ${OPTION_CLI[$option_key]} '${value}'; expected one of: ${allowed}" \
+                "$EX_USAGE"
     done
 }
 
-# =============================================================================
-# endregion S7. CLI
-# =============================================================================
+# --- S9.2 Command-specific and persistent-state validation ---------------
 
-# =============================================================================
-# region S7a. Validate config
-# =============================================================================
+validate_case_prefix() {
+    # Case IDs depend on a compact, stable prefix. Validate it before using it
+    # to build or evaluate any regular expression.
+    [[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
+        || hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
+}
 
-validate_config() {
-    local command_count
-    local file
+validate_new_case_state() {
+    # The shared schema has already checked required/allowed options and enums.
+    # This layer validates the title syntax and resolved paths specific to NEW.
+    [[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
+
+    [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
+        || hardstop "Internal state resolution failed for new case" "$EX_SOFTWARE"
+
+    log "Generated Case-ID: ${INPUT[CASE]}"
+}
+
+validate_existing_case_id() {
     local case_regex
     local regex_status
 
-     info "running validate_config..."
-
-    command_count="$(command_count)"
-    debug "command_count: $command_count"
-
-    (( command_count == 1 )) \
-        || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
-
-    validate_command_contract
-    validate_enum_options
-
-    [[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
-        || hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
-
-    if (( COMMANDS[NEW] )); then
-        [[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-            || hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
-
-        [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
-            || hardstop "Internal state resolution failed for new case" "$EX_SOFTWARE"
-
-        log "Generated Case-ID: ${INPUT[CASE]}"
-        return 0
-    fi
-
-    # All other commands require an existing case selected by the shared contract.
+    # Existing-case commands must point at a Tracehold-shaped directory name.
+    # Calendar validity is intentionally out of scope; this checks structure.
     case_regex="^${CASE_PREFIX}_[0-9]{8}_[0-9]{6}_UTC_[A-Za-z0-9_.-]*$"
+
     if [[ "${INPUT[CASE]}" =~ $case_regex ]]; then
         debug "Case-ID validated: <${INPUT[CASE]}>"
+        return 0
     else
+        # Capture the regex engine status before another command overwrites it.
         regex_status=$?
+    fi
 
     if (( regex_status == 2 )); then
         hardstop \
@@ -2324,11 +2429,13 @@ validate_config() {
             "$EX_SOFTWARE"
     fi
 
-        hardstop \
-            "Invalid Case-ID <${INPUT[CASE]}>; expected ${CASE_PREFIX}_YYYYMMDD_HHMMSS_UTC_title" \
-            "$EX_USAGE"
-    fi
+    hardstop \
+        "Invalid Case-ID <${INPUT[CASE]}>; expected ${CASE_PREFIX}_YYYYMMDD_HHMMSS_UTC_title" \
+        "$EX_USAGE"
+}
 
+load_existing_case_state() {
+    # Resolve and verify the persistent state shared by ADD/COLLECT/VERIFY/BUNDLE.
     [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
         || hardstop "Internal state resolution failed for existing case" "$EX_SOFTWARE"
 
@@ -2348,22 +2455,62 @@ validate_config() {
 
     debug "Latest prior run manifest: <$LATEST_RUN_MANIFEST>"
     debug "Latest prior case manifest: <$LATEST_CASE_MANIFEST>"
-    # end universal conditions
+}
+
+validate_add_state() {
+    local file
+
+    # Existence is checked as a complete batch before the workflow copies any
+    # evidence. This preserves the current all-inputs-first validation behavior.
+    for file in "${FILES[@]}"; do
+        assert_file_exists "$file"
+        debug "Verifying input file exists: <$file>"
+    done
+
+    log "File type validated: ${INPUT[TYPE]}"
+}
+
+validate_collect_state() {
+    debug "Running validate_config COLLECT"
+
+    # PROFILE has a default even when the operator does not provide the option.
+    (( WAS_SET[PROFILE] )) \
+        || warn "No input --profile chosen; using 'default'"
+
+    info "${INPUT[PROFILE]} selected"
+}
+
+validate_config() {
+    local selected_count
+
+    info "running validate_config..."
+
+    # Layer 1: command cardinality and schema-level option contracts.
+    selected_count="$(command_count)"
+    debug "command_count: $selected_count"
+
+    (( selected_count == 1 )) \
+        || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
+
+    validate_command_contract
+    validate_enum_options
+    validate_case_prefix
+
+    # Layer 2: command-specific state and persistent-case checks.
+    if (( COMMANDS[NEW] )); then
+        validate_new_case_state
+        return 0
+    fi
+
+    validate_existing_case_id
+    load_existing_case_state
 
     if (( COMMANDS[ADD] )); then
-        for file in "${FILES[@]}"; do
-            assert_file_exists "$file"
-            debug "Verifying input file exists: <$file>"
-        done
-
-        log "File type validated: ${INPUT[TYPE]}"
+        validate_add_state
     fi
 
     if (( COMMANDS[COLLECT] )); then
-        debug "Running validate_config COLLECT"
-        (( WAS_SET[PROFILE] )) \
-            || warn "No input --profile chosen; using 'default'"
-        info "${INPUT[PROFILE]} selected"
+        validate_collect_state
     fi
 
     if (( COMMANDS[VERIFY] )); then
@@ -2376,81 +2523,94 @@ validate_config() {
 }
 
 # =============================================================================
-# endregion S7a. Validate config
+# endregion S9. Configuration validation
 # =============================================================================
 
 # =============================================================================
-# region S8. Workflow
+# region S10. Command workflows
 # =============================================================================
 
-# --- Main workflow -----------------------------------------------------------
+# --- S10.1 NEW case construction -----------------------------------------
 
-run_workflow() {
+create_new_case_artifacts() {
+    # Case manifest first, then the evidence/derived/commands/reports branches.
+    # The ordering mirrors the directory tree shown in `tracehold --help`.
+    debug "Case_ID set: ${INPUT[CASE]}"
+
+    ensure_dir "${CASE_DIR}"
+    ensure_dir "$MANIFEST_DIR"
+    make_case_manifest "${MANIFEST_DIR}/case_manifest_${RUN_ID}.txt"
+
+    # Future snapshot writers remain deliberately disabled in v1.1.0.
+    # environment_check "${CASE_DIR}/manifest/environment.txt"
+    # software_check "${CASE_DIR}/manifest/software_versions.txt"
+    # verify_checksums "${CASE_DIR}/manifest/checksums.sha256"
+
+    ensure_dir "${CASE_DIR}/evidence"
+    ensure_dir "${CASE_DIR}/evidence/raw"
+    ensure_dir "${CASE_DIR}/evidence/photos"
+    ensure_dir "${CASE_DIR}/evidence/logs"
+    ensure_dir "${CASE_DIR}/evidence/operator_notes"
+
+    ensure_dir "${CASE_DIR}/derived"
+    ensure_dir "${CASE_DIR}/derived/timelines"
+    ensure_dir "${CASE_DIR}/derived/extracts"
+    ensure_dir "${CASE_DIR}/derived/figures"
+
+    ensure_dir "${CASE_DIR}/commands"
+    write_file "${CASE_DIR}/commands/collection.log" "test collection.log"
+    write_file "${CASE_DIR}/commands/replay.sh" "test replay.sh"
+
+    ensure_dir "${CASE_DIR}/reports"
+    initial_triage "${CASE_DIR}/reports/initial_triage.md"
+    write_file "${CASE_DIR}/reports/handoff.md" "test handoff.md"
+}
+
+# --- S10.2 ADD evidence routing ------------------------------------------
+
+evidence_target_dir() {
+    local evidence_type="${1:?evidence_target_dir requires an evidence type}"
+
+    # Keep public evidence types decoupled from their on-disk directory names.
+    case "$evidence_type" in
+        raw)   printf '%s\n' "${CASE_DIR}/evidence/raw" ;;
+        photo) printf '%s\n' "${CASE_DIR}/evidence/photos" ;;
+        log)   printf '%s\n' "${CASE_DIR}/evidence/logs" ;;
+        note)  printf '%s\n' "${CASE_DIR}/evidence/operator_notes" ;;
+        *)
+            hardstop \
+                "Unknown file type. Available: 'raw','photo','log','note'" \
+                "$EX_USAGE"
+            ;;
+    esac
+}
+
+add_evidence_files() {
     local file
     local file_path
     local file_name
+    local target_dir
 
-    info "Run ID: $RUN_ID"
+    target_dir="$(evidence_target_dir "${INPUT[TYPE]}")"
 
-    make_run_manifest "${MANIFEST_DIR}/run_manifest_${RUN_ID}.txt"
+    # Validation has already confirmed every source is a regular file. Resolve
+    # each absolute path only at the point where it enters the copy transaction.
+    for file in "${FILES[@]}"; do
+        file_path="$(realpath "$file")"
+        file_name="$(basename "$file")"
 
-    if (( COMMANDS[NEW] )); then
-		debug "Case_ID set: ${INPUT[CASE]}"
-        ensure_dir "${CASE_DIR}"
-        ensure_dir "$MANIFEST_DIR"
+        debug "file_path: $file_path"
+        debug "file_name: $file_name"
 
-        make_case_manifest "${MANIFEST_DIR}/case_manifest_${RUN_ID}.txt"
-        #environment_check "${CASE_DIR}/manifest/environment.txt"
-        #software_check "${CASE_DIR}/manifest/software_versions.txt"
-        #verify_checksums  "${CASE_DIR}/manifest/checksums.sha256"
+        copy_evidence "$file_name" "$file_path" "$target_dir"
+    done
+}
 
-        ensure_dir "${CASE_DIR}/evidence"
-        ensure_dir "${CASE_DIR}/evidence/raw"
-        ensure_dir "${CASE_DIR}/evidence/photos"
-        ensure_dir "${CASE_DIR}/evidence/logs"
-        ensure_dir "${CASE_DIR}/evidence/operator_notes"
+# --- S10.3 Scaffold visibility -------------------------------------------
 
-        ensure_dir "${CASE_DIR}/derived"
-        ensure_dir "${CASE_DIR}/derived/timelines"
-        ensure_dir "${CASE_DIR}/derived/extracts"
-        ensure_dir "${CASE_DIR}/derived/figures"
-
-        ensure_dir "${CASE_DIR}/commands"
-        write_file "${CASE_DIR}/commands/collection.log" "test collection.log"
-        write_file "${CASE_DIR}/commands/replay.sh" "test replay.sh"
-
-        ensure_dir "${CASE_DIR}/reports"
-        initial_triage "${CASE_DIR}/reports/initial_triage.md"
-        write_file "${CASE_DIR}/reports/handoff.md" "test handoff.md"
-    fi
-
-    if (( COMMANDS[ADD] )); then
-			for file in "${FILES[@]}"; do
-				file_path="$(realpath "$file")"
-				file_name="$(basename "$file")"
-				debug "file_path: $file_path"
-				debug "file_name: $file_name"
-
-
-
-            	case "${INPUT[TYPE]}" in
-					raw)
-						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/raw"
-					;;
-					photo)
-						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/photos"
-					;;
-					log)
-						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/logs"
-					;;
-					note)
-					 	copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/operator_notes"
-					;;
-					*) hardstop "Unknown file type. Available: 'raw','photo','log','note'" "$EX_USAGE" ;;
-				esac
-			done
-    fi
-
+run_scaffolded_command_hooks() {
+    # These hooks intentionally remain no-ops. Keeping them visible in the
+    # orchestrator makes unfinished command scope difficult to mistake as done.
     if (( COMMANDS[COLLECT] )); then
         debug "Collect = ${COMMANDS[COLLECT]}"
     fi
@@ -2462,14 +2622,43 @@ run_workflow() {
     if (( COMMANDS[BUNDLE] )); then
         debug "${COMMANDS[BUNDLE]}"
     fi
+}
 
+# --- S10.4 Workflow orchestrator -----------------------------------------
+
+run_workflow() {
+    info "Run ID: $RUN_ID"
+
+    # Every command records invocation context before command-specific work.
+    make_run_manifest "${MANIFEST_DIR}/run_manifest_${RUN_ID}.txt"
+
+    if (( COMMANDS[NEW] )); then
+        create_new_case_artifacts
+    fi
+
+    if (( COMMANDS[ADD] )); then
+        add_evidence_files
+    fi
+
+    run_scaffolded_command_hooks
+
+    # Preserve the current summary contract and terminal output exactly.
     write_summary "${MANIFEST_DIR}/summary_${RUN_ID}.txt" "ok"
     log "tracehold: workflow complete"
     log "Case-ID: ${INPUT[CASE]}"
 }
 
-# --- Self-test ---------------------------------------------------------------
+# =============================================================================
+# endregion S10. Command workflows
+# =============================================================================
 
+# =============================================================================
+# region S11. Self-test
+# =============================================================================
+
+# --- S11.1 Temporary-directory smoke test --------------------------------
+
+# Preserve the existing NEW-command smoke test and its artifact assertions.
 run_self_test() {
     local tmp_dir
     local expected_case_dir
@@ -2520,13 +2709,17 @@ run_self_test() {
 }
 
 # =============================================================================
-# endregion S8. Workflow
+# endregion S11. Self-test
 # =============================================================================
 
 # =============================================================================
-# region S9. Main
+# region S12. Entrypoint
 # =============================================================================
 
+# --- S12.1 Adapter dispatch and primary lifecycle ------------------------
+
+# Completion is handled before strict runtime installation because shell
+# completion probes must fail quietly rather than print trap diagnostics.
 main() {
     if [[ "${1-}" == "__complete" ]]; then
         shift
@@ -2559,7 +2752,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 # =============================================================================
-# endregion S9. Main
+# endregion S12. Entrypoint
 # =============================================================================
 #
 #                         ┌───────────────┐
