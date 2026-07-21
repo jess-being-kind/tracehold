@@ -763,24 +763,372 @@ This is a known v1.1.0 defect caused by checking for the current invocation's ru
 
 The verification payload is not implemented. Current success only means the scaffolded workflow reached completion.
 
-## Development priorities
+## Roadmap
 
-Near-term work should include:
+> [!NOTE]
+> `P0` through `P4` below are **development priorities**, not Tracehold case-severity classifications.
+>
+> **Dependency path:** P0 Stabilize → P1 Prove Integrity → P2 Complete Workflows → P3 Productize → P4 Integrate
 
-1. make `add` discover existing case manifests instead of using the current run ID;
-2. route evidence copies through controlled apply/dry-run helpers;
-3. define collision behavior and backup policy for added evidence;
-4. implement checksum generation and verification;
-5. implement collection-profile behavior;
-6. implement portable archive creation;
-7. replace placeholder artifacts with useful content;
-8. sanitize or validate case-title slugs;
-9. validate timestamps and enumerated fields;
-10. record collection commands and file provenance;
-11. split self-tests into independent command invocations;
-12. add fixture-based positive and negative tests;
-13. run ShellCheck in CI;
-14. stabilize the case schema and manifest extensions.
+### Current milestone
+
+Tracehold is currently moving from a case-generation scaffold toward a trustworthy evidence-ingest system.
+
+Already implemented or substantially complete:
+
+- [x] discover prior case and run manifests independently of the current invocation's run ID;
+- [x] route evidence copies through the apply/dry-run boundary;
+- [x] support multiple files in one `add` invocation;
+- [x] validate case-ID structure, case directories, manifest directories, evidence type, and source-file existence;
+- [x] require explicit `--force` before replacing a same-named evidence destination;
+- [x] preserve a timestamped backup during forced replacement;
+- [x] capture an initial SHA-256 digest for evidence selected by `add`;
+- [x] isolate the current smoke test from normal case storage;
+- [x] resolve reusable case and manifest paths before validation and execution.
+
+The next milestone is to turn the current hash capture into a complete integrity transaction:
+
+```text
+identify source
+    → preflight destination
+        → copy atomically
+            → verify destination hash
+                → record structured provenance
+                    → verify later
+```
+
+### P0 — Evidence safety and core correctness
+
+**Target release:** `v1.1.1`  
+**Goal:** Tracehold cannot silently overwrite evidence, escape its configured case root, emit invalid audit artifacts, or claim completion for work it did not perform.
+
+- [ ] **Preflight the complete `add` batch before the first mutation**
+  - Resolve every source and destination.
+  - Detect repeated source paths, duplicate basenames, existing destinations, and invalid target directories.
+  - **Reason:** A multi-file ingest should either pass preflight as a whole or perform no copies.
+
+- [ ] **Define the final evidence-collision policy**
+  - Recommended default: fail.
+  - Future explicit policies may include `skip-identical` and `preserve-both`.
+  - **Reason:** Two unrelated evidence files may share a basename; replacement should not be the default evidence model.
+
+- [ ] **Confine canonicalized paths beneath `OUTPUT_DIR`**
+  - Validate case, manifest, evidence, temporary, and bundle paths.
+  - Reject path traversal and symlink escape.
+  - **Reason:** User-controlled values must not redirect writes outside the selected case root.
+
+- [ ] **Make evidence copying atomic**
+  - Copy into a temporary file on the destination filesystem.
+  - Verify the temporary copy.
+  - Rename it into its final location only after verification succeeds.
+  - Remove temporary files after failure.
+  - **Reason:** Interrupted copies must not appear to be valid preserved evidence.
+
+- [ ] **Add a command/option legality matrix**
+  - Reject options that are irrelevant to the selected command.
+  - **Reason:** Silently ignored options create false operator confidence.
+
+- [ ] **Emit standalone valid JSON artifacts using `.json` extensions**
+  - Stop representing JSON manifests as `.txt`.
+  - Ensure self-tests never concatenate pretty-printed JSON objects.
+  - **Reason:** Artifact type and file extension should agree, and every artifact should be machine-parseable.
+
+- [ ] **Make run summaries truthful**
+  - Suggested statuses: `dry_run`, `completed`, `validated_only`, `not_implemented`, `partial`, and `failed`.
+  - **Reason:** A successful scaffold or no-op is not a completed collection, verification, or bundle.
+
+- [ ] **Expand self-tests into isolated command tests**
+  - Reset command flags, inputs, variadic arrays, derived paths, and run identity for each test.
+  - **Reason:** Shared process state can hide invocation-boundary defects.
+
+- [ ] **Add P0 regression coverage**
+  - [ ] dry-run performs zero filesystem mutations;
+  - [ ] filenames containing spaces, tabs, wildcard characters, and leading dashes are handled safely;
+  - [ ] repeated source paths are reported explicitly;
+  - [ ] duplicate basenames are reported before copying;
+  - [ ] read-only destinations fail before mutation;
+  - [ ] path traversal cannot escape `OUTPUT_DIR`;
+  - [ ] interrupted copies leave no final evidence artifact;
+  - [ ] every generated JSON artifact passes `jq -e .`.
+
+#### P0 exit gate
+
+- [ ] `tracehold add` is trustworthy for evidence that cannot be reacquired.
+
+### P1 — Provenance, hashes, and real verification
+
+**Target release:** `v1.2.0`  
+**Goal:** Every evidence object has an inspectable identity, source, preserved destination, integrity record, ingest result, and later verification result.
+
+- [x] **Capture an initial source SHA-256 digest during `add`**
+  - Current implementation records the digest beside the selected source path.
+
+- [ ] **Hash and compare both source and preserved destination**
+  - Calculate the source digest.
+  - Copy the evidence.
+  - Calculate the destination digest.
+  - Require equality before finalizing the ingest.
+  - **Reason:** Hash capture alone does not prove that the preserved copy matches the selected source.
+
+- [ ] **Write provenance only after successful preservation**
+  - **Reason:** A failed copy must not leave a record claiming that evidence was added successfully.
+
+- [ ] **Create a canonical evidence index**
+  - Suggested artifact: `manifest/evidence_index.json` or append-only `manifest/evidence_events.jsonl`.
+  - Record:
+    - evidence ID;
+    - ingest timestamp and run ID;
+    - original and resolved source paths;
+    - case-relative destination path;
+    - evidence type;
+    - size;
+    - SHA-256;
+    - collision action;
+    - copy-verification result;
+    - final operation status.
+  - **Reason:** A checksum line is useful integrity metadata, but it is only minimal provenance.
+
+- [ ] **Keep the initial case manifest immutable**
+  - Store later evidence events in a dedicated index or event stream.
+  - **Reason:** Case creation state and later case history are different artifact responsibilities.
+
+- [ ] **Implement the `verify` workflow**
+  - Validate required case structure.
+  - Validate manifest syntax and schema.
+  - Check indexed-file existence.
+  - Recalculate and compare hashes.
+  - Report modified, missing, unexpected, malformed, and unverifiable evidence separately.
+  - **Reason:** Hashing is not complete until Tracehold can consume the recorded hashes later.
+
+- [ ] **Preserve variadic values as JSON arrays**
+  - Assets, sites, owners, files, and recent changes should remain arrays.
+  - **Reason:** Automation should not have to reverse comma-joined presentation strings.
+
+- [ ] **Separate invocation intent from operation outcome**
+  - Run manifest: what was requested.
+  - Operation record: what was attempted and what happened.
+  - Summary: final status, warnings, counts, and duration.
+  - **Reason:** Requested work and completed work are different facts.
+
+- [ ] **Standardize the case manifest as versioned JSON**
+
+- [ ] **Define and test source and destination symlink policy**
+
+#### P1 exit gate
+
+- [ ] `tracehold verify CASE_ID` distinguishes intact, modified, missing, extra, malformed, and unverifiable evidence.
+
+### P2 — Complete the operational workflows
+
+**Target release:** `v1.3.0`  
+**Goal:** `collect`, `verify`, and `bundle` perform useful, bounded operations rather than validation-only scaffolding.
+
+- [ ] **Implement collection profiles**
+  - `default`
+  - `general`
+  - `environment`
+
+- [ ] **Harden environment collection**
+  - Check optional and required commands.
+  - Apply bounded timeouts.
+  - Capture stderr and permission failures.
+  - Record unavailable fields rather than silently omitting them.
+  - Report partial completion explicitly.
+
+- [ ] **Implement software and configuration snapshots**
+  - Capture relevant tool versions, service state, Git revision, configuration files, and allowlisted environment data.
+  - Record redactions and unavailable sources.
+
+- [ ] **Generate a real `commands/replay.sh`**
+  - Use safe quoting.
+  - Record collection and derivation commands in execution order.
+  - Operate on copied evidence rather than original evidence.
+
+- [ ] **Generate a real `reports/handoff.md`**
+  - Include case status, integrity state, evidence inventory, leading hypotheses, unknowns, owners, immediate actions, and next decision.
+
+- [ ] **Implement `bundle`**
+  - Verify before bundling.
+  - Use a deterministic archive layout.
+  - Include a bundle manifest and archive digest.
+  - Reject unsafe output locations.
+  - Confirm that an extracted bundle verifies identically to the source case.
+
+- [ ] **Model case lifecycle states and legal transitions**
+  - Suggested states: `open`, `contained`, `collecting`, `analysis`, `awaiting_action`, `resolved`, and `archived`.
+
+- [ ] **Record workflow outcome metrics**
+  - Files attempted, copied, skipped, and failed.
+  - Bytes preserved.
+  - Hashes verified.
+  - Warnings.
+  - Duration.
+  - Final workflow state.
+
+#### P2 exit gate
+
+- [ ] The complete lifecycle passes:
+
+```text
+new → add/collect → verify → handoff → bundle → verify extracted bundle
+```
+
+### P3 — Testing, packaging, and operator experience
+
+**Target release:** `v1.4.0`  
+**Goal:** Tracehold is maintainable, installable, discoverable, and safe for use by an operator other than its author.
+
+- [ ] Move automated tests into Bats or an equivalent shell-test harness.
+
+- [ ] Add continuous integration:
+  - [ ] `bash -n`;
+  - [ ] ShellCheck;
+  - [ ] `shfmt -d`;
+  - [ ] unit tests;
+  - [ ] integration tests;
+  - [ ] JSON/schema validation;
+  - [ ] bundle round-trip verification.
+
+- [ ] Create stable fixture cases:
+  - [ ] clean case;
+  - [ ] modified evidence;
+  - [ ] missing evidence;
+  - [ ] duplicate basename;
+  - [ ] malformed manifest;
+  - [ ] partial collection;
+  - [ ] legacy schema.
+
+- [ ] Add installation and uninstall workflows with a configurable prefix.
+
+- [ ] Add Bash completion, with optional Zsh and Fish support later.
+
+- [ ] Add machine-readable `--json` output for summaries and errors.
+
+- [ ] Publish:
+  - README quick start;
+  - man page;
+  - schema reference;
+  - exit-code reference;
+  - collection-profile authoring guide;
+  - worked examples.
+
+- [ ] Define supported Bash versions, operating systems, and GNU/BSD command differences.
+
+- [ ] Test multi-gigabyte evidence handling without loading file contents into shell variables.
+
+#### P3 exit gate
+
+- [ ] A new operator can install Tracehold, create a case, ingest evidence, verify it, and bundle it using only the published documentation.
+
+### P4 — Traceview and ecosystem integrations
+
+**Target release:** `v2.x`  
+**Goal:** Extend Tracehold from a single capture CLI into an evidence, analysis, and reliability ecosystem without losing lineage.
+
+- [ ] **Integrate Traceview**
+  - Browse and search cases.
+  - Validate schemas.
+  - Visualize event timelines.
+  - Compare runs and configurations.
+  - Inspect evidence lineage.
+  - Generate decision-oriented reports.
+
+- [ ] **Add plugin-based collection profiles**
+  - UAS/PX4.
+  - RF/network.
+  - Linux host.
+  - Embedded target.
+  - CAN.
+  - Power and thermal bench.
+
+- [ ] **Add domain importers**
+  - `.ulg`;
+  - `.tlog`;
+  - PCAP;
+  - CAN logs;
+  - ROS bags;
+  - CSV and JSONL;
+  - `journalctl` exports;
+  - oscilloscope captures.
+
+- [ ] **Build cross-case indexing**
+  - Search by asset, site, version, subsystem, error code, hash, symptom, root cause, and regression.
+
+- [ ] **Integrate issue trackers**
+  - GitHub Issues and Discussions first.
+  - Jira or Linear later.
+
+- [ ] **Support remote or object storage**
+  - Content-addressed upload.
+  - Resumable transfer.
+  - Offline-first queueing.
+  - Retention policies.
+
+- [ ] **Add signing and optional encryption**
+
+- [ ] **Generate reliability outputs**
+  - Repeated-signature reports.
+  - Site and version comparisons.
+  - Asset-health features.
+  - Failure cemetery.
+  - Regression-coverage evidence.
+
+- [ ] **Add redaction and export profiles**
+  - Internal.
+  - Vendor-safe.
+  - Customer-safe.
+  - Public.
+
+- [ ] **Add reusable case templates**
+  - RF degradation.
+  - Intermittent reboot.
+  - Estimator divergence.
+  - Actuator-authority loss.
+  - Thermal fault.
+  - Docking failure.
+
+#### P4 exit gate
+
+- [ ] A field symptom can move through capture, analysis, ownership, corrective action, and regression without losing evidence lineage.
+
+### Suggested version sequence
+
+| Version | Primary objective | Release test |
+|---|---|---|
+| `v1.1.1` | P0 stabilization | Safe multi-file ingest with no silent overwrite, path escape, partial final files, or invalid artifacts |
+| `v1.2.0` | P1 provenance and verification | Every indexed artifact is hash-verifiable and schema-valid |
+| `v1.3.0` | P2 workflow completion | Full lifecycle through a portable, verified bundle |
+| `v1.4.0` | P3 productization | CI, tests, installation, documentation, completions, and machine-readable output |
+| `v2.0.0` | P4 Traceview ecosystem | Capture, inspect, correlate, report, and learn across cases |
+
+### Recommended immediate sprint
+
+- [ ] Add `resolve_evidence_destination`.
+- [ ] Add batch-wide `preflight_add`.
+- [ ] Reject duplicate source paths and duplicate basenames.
+- [ ] Refuse existing destinations by default or preserve both explicitly.
+- [ ] Copy through a temporary destination.
+- [ ] Compare source and destination SHA-256.
+- [ ] Record provenance only after the copy is verified.
+- [ ] Add a structured evidence index.
+- [ ] Implement the first real `verify` pass.
+- [ ] Add tests for dry-run, collision, hash mismatch, path escape, and interrupted copy.
+- [ ] Rename JSON manifests to `.json`.
+- [ ] Bump to `v1.1.1` after the P0 exit gate passes.
+
+#### Immediate sprint definition of done
+
+```text
+NEW creates a valid case
+ADD preflights the complete batch
+ADD copies atomically
+ADD verifies source and destination hashes
+ADD records structured provenance
+VERIFY proves the copy and case structure
+DRY-RUN mutates nothing
+SELF-TEST produces only valid artifacts
+```
+
 
 ## Contributing
 
