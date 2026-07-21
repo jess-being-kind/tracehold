@@ -32,7 +32,7 @@
 
 # --- Metadata ----------------------------------------------------------------
 
-VERSION="2.0.0"
+VERSION="1.1.0"
 AUTHOR="V Halcyon"
 SCRIPT_NAME="$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
@@ -49,6 +49,8 @@ CASE_PREFIX="TH"
 
 CASE_DIR=""
 MANIFEST_DIR=""
+LATEST_RUN_MANIFEST=""
+LATEST_CASE_MANIFEST=""
 
 # --- Input tracking ----------------------------------------------------------
 
@@ -302,6 +304,7 @@ copy_evidence() {
     local file_path="${2:?copy_evidence requires an absolute file path}"
     local target_dir="${3:?copy_evidence requires a target directory}"
     local target_path="${target_dir}/${file_name}"
+    local write_sha
 
     ensure_dir "$target_dir"
 
@@ -310,6 +313,9 @@ copy_evidence() {
             || hardstop "Evidence already exists: $target_path  Use --force to preserve a backup and replace it." "$EX_CANTCREAT"
         backup_if_exists "$target_path"
     fi
+
+    write_sha=$(sha256sum "${file_path}")
+    run_cmd append_unique_line "$write_sha" "${LATEST_CASE_MANIFEST}"
 
     run_cmd cp -a -- "$file_path" "$target_path"
 }
@@ -409,6 +415,14 @@ write_file_stream() {
     local content
     content="$(cat)"
     write_file "$path" "$content"$'\n'
+}
+
+append_unique_line() {
+    local line="${1:?append_unique_line requires content}"
+    local file="${2:?append_unique_line requires a file}"
+
+    grep -Fqx -- "$line" "$file" 2>/dev/null ||
+        printf '%s\n' "$line" >> "$file"
 }
 
 # =============================================================================
@@ -687,6 +701,8 @@ make_case_manifest() {
 	files_added=${INPUT[FILE]}
 	files_type=${INPUT[TYPE]}
 	profile=${INPUT[PROFILE]}
+
+    EVIDENCE_SHA256SUM:
 	CASE_MANIFEST
 }
 
@@ -1698,8 +1714,6 @@ parse_args() {
 
 validate_config() {
     local command_count
-    local latest_run_manifest
-    local latest_case_manifest
     local file
     local case_regex
 
@@ -1774,19 +1788,19 @@ validate_config() {
     assert_dir_exists "$CASE_DIR"
     assert_dir_exists "$MANIFEST_DIR"
 
-    latest_run_manifest="$(
+    LATEST_RUN_MANIFEST="$(
         find_latest_manifest "$MANIFEST_DIR" "run_manifest" "$RUN_ID"
     )" || hardstop "No prior run manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
 
-    latest_case_manifest="$(
+    LATEST_CASE_MANIFEST="$(
         find_latest_manifest "$MANIFEST_DIR" "case_manifest" "$RUN_ID"
     )" || hardstop "No prior case manifest found for ${INPUT[CASE]}" "$EX_DATAERR"
 
-    assert_file_exists "$latest_run_manifest"
-    assert_file_exists "$latest_case_manifest"
+    assert_file_exists "$LATEST_RUN_MANIFEST"
+    assert_file_exists "$LATEST_CASE_MANIFEST"
 
-    debug "Latest prior run manifest: <$latest_run_manifest>"
-    debug "Latest prior case manifest: <$latest_case_manifest>"
+    debug "Latest prior run manifest: <$LATEST_RUN_MANIFEST>"
+    debug "Latest prior case manifest: <$LATEST_CASE_MANIFEST>"
     # end universal conditions
 
     if (( COMMANDS[ADD] )); then
@@ -1886,6 +1900,8 @@ run_workflow() {
 				debug "file_path: $file_path"
 				debug "file_name: $file_name"
 
+
+
             	case "${INPUT[TYPE]}" in
 					raw)
 						copy_evidence "$file_name" "$file_path" "${CASE_DIR}/evidence/raw"
@@ -1918,6 +1934,7 @@ run_workflow() {
 
     write_summary "${MANIFEST_DIR}/summary_${RUN_ID}.txt" "ok"
     log "tracehold: workflow complete"
+    log "Case-ID: ${INPUT[CASE]}"
 }
 
 # --- Self-test ---------------------------------------------------------------
