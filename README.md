@@ -24,7 +24,7 @@ The `new` workflow is the current center of gravity. The remaining commands are 
 | Command | Intended purpose | v1.1.0 state |
 |---|---|---|
 | `new` | Create a case and initial triage structure | Implemented primary workflow |
-| `add` | Copy evidence into an existing case | Experimental; known validation and dry-run issues |
+| `add` | Copy evidence into an existing case | Experimental; multi-file ingest, dry-run routing, collision backup, and initial SHA-256 capture implemented |
 | `collect` | Run a collection profile | Scaffold only |
 | `verify` | Validate case structure and evidence integrity | Scaffold only |
 | `bundle` | Create a portable case archive | Scaffold only |
@@ -83,8 +83,7 @@ Apply the planned changes only after reviewing the preview:
     --apply
 ```
 
-> [!WARNING]
-> The v1.1.0 `add` copy operation is not routed through `run_cmd()` and must not be assumed to obey dry-run protection. See [Known v1.1.0 limitations](#known-v110-limitations).
+The current `add` copy path is routed through `run_cmd()`, so dry-run previews do not perform the evidence copy or checksum-manifest append. `add` remains experimental because destination-hash verification and structured provenance are not complete.
 
 ### Preserve raw evidence
 
@@ -143,6 +142,7 @@ Fatal validation and runtime conditions are routed through `hardstop()`, which e
 - Bash `4.3` or newer
 - `jq`
 - `realpath`
+- `sha256sum`
 - standard utilities including `date`, `mkdir`, `cp`, `mv`, `rm`, and `mktemp`
 
 Bash `4.3+` is required because the CLI helpers use nameref variables through `local -n`.
@@ -165,38 +165,208 @@ Some of those commands may require additional packages or permissions.
 
 ## Installation
 
-Clone the repository:
+### 1. Clone and inspect the project
 
 ```bash
 git clone <repository-url>
 cd tracehold
 ```
 
-Make the script executable:
+Make the script executable and verify its syntax:
 
 ```bash
 chmod +x tracehold.sh
-```
-
-Verify the entry points:
-
-```bash
+bash -n tracehold.sh
 ./tracehold.sh --version
 ./tracehold.sh --help
 ```
 
-Optionally create a symlink somewhere already included in `PATH`:
+### 2. Install the command
+
+A user-local installation does not require root privileges:
 
 ```bash
 mkdir -p "$HOME/.local/bin"
-ln -s "$(pwd)/tracehold.sh" "$HOME/.local/bin/tracehold"
+install -m 0755 tracehold.sh "$HOME/.local/bin/tracehold"
 ```
 
-Then invoke it as:
+Make sure the directory is in `PATH`:
 
 ```bash
+case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) export PATH="$HOME/.local/bin:$PATH" ;;
+esac
+```
+
+To make that `PATH` update persistent, place the same block in `~/.bashrc`, then reload it:
+
+```bash
+source "$HOME/.bashrc"
+```
+
+Verify the installed command:
+
+```bash
+command -v tracehold
+tracehold --version
 tracehold --help
 ```
+
+#### Development symlink alternative
+
+During active development, a symlink keeps the installed command pointed at the working tree:
+
+```bash
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$(pwd)/tracehold.sh" "$HOME/.local/bin/tracehold"
+```
+
+Use either the copied installation or the development symlink—not both at different locations in `PATH`.
+
+### 3. Install Bash completion
+
+Tracehold generates its completion script from the same command schema used by parsing, validation, and generated help:
+
+```bash
+mkdir -p "$HOME/.local/share/bash-completion/completions"
+tracehold --completion bash \
+    > "$HOME/.local/share/bash-completion/completions/tracehold"
+```
+
+Validate and load it in the current shell:
+
+```bash
+bash -n "$HOME/.local/share/bash-completion/completions/tracehold"
+source "$HOME/.local/share/bash-completion/completions/tracehold"
+```
+
+Then test the guided sequence:
+
+```text
+tracehold new <TAB>
+# → --title
+
+tracehold add <TAB>
+# → --case
+```
+
+Most systems with the `bash-completion` package load files from the user completion directory automatically in new shells. If yours does not, add this guarded fallback to `~/.bashrc`:
+
+```bash
+completion_file="$HOME/.local/share/bash-completion/completions/tracehold"
+
+[[ -r "$completion_file" ]] &&
+    source "$completion_file"
+```
+
+After changing Tracehold's command schema, regenerate the installed completion file:
+
+```bash
+tracehold --completion bash \
+    > "$HOME/.local/share/bash-completion/completions/tracehold"
+```
+
+### 4. Optional uninstall
+
+Remove the installed command and generated completion file:
+
+```bash
+rm -f "$HOME/.local/bin/tracehold"
+rm -f "$HOME/.local/share/bash-completion/completions/tracehold"
+```
+
+## Bash completion
+
+Bash programmable completion is implemented as a thin generated adapter over Tracehold's internal schema. The completion file does not maintain a second independent list of commands or options. Instead, it asks the executable for context-aware candidates through an internal completion interface.
+
+The shared schema defines:
+
+- command names and descriptions;
+- required options for each command;
+- allowed optional and execution options;
+- scalar, variadic, enum, case-ID, file, directory, and flag value types;
+- enum values for severity, evidence type, and collection profile;
+- canonical CLI spellings and supported aliases.
+
+That schema is consumed by:
+
+```text
+argument parsing
+    ↕
+required/allowed validation
+    ↕
+generated command-contract help
+    ↕
+Bash programmable completion
+```
+
+### Guided required inputs
+
+Completion advances through the first missing required input:
+
+```text
+tracehold new <TAB>
+→ --title
+
+tracehold new --title link_loss <TAB>
+→ --description
+
+tracehold new --title link_loss --description "Link dropped" <TAB>
+→ --severity
+
+tracehold new --title link_loss --description "Link dropped" --severity P1 <TAB>
+→ --asset
+```
+
+After the required contract is satisfied, completion offers the remaining options that are legal for the selected command.
+
+### Context-aware values
+
+Completion provides:
+
+- `P0` through `P4` after `--severity`;
+- `raw`, `photo`, `log`, and `note` after `--type`;
+- `default`, `general`, and `environment` after `--profile`;
+- existing case IDs after `--case`;
+- filesystem paths after `--file`;
+- directories after `--output-dir`.
+
+Case-ID completion respects an earlier `--output-dir` in the same command:
+
+```bash
+tracehold add \
+    --output-dir /tmp/tracehold-cases \
+    --case <TAB>
+```
+
+### Variadic-option behavior
+
+After one value is present, completion treats a variadic required option as satisfied and advances to the next missing requirement:
+
+```text
+tracehold add --case TH_... --file vehicle.log <TAB>
+→ --type
+```
+
+Additional values can still be entered manually before requesting the next option:
+
+```bash
+tracehold add \
+    --case TH_... \
+    --file vehicle.log ground.log radio.log \
+    --type log
+```
+
+### Completion architecture
+
+The public interface is:
+
+```bash
+tracehold --completion bash
+```
+
+The generated adapter uses an internal `__complete` protocol. `__complete` is an implementation detail for shell integration and is not part of the stable operator-facing CLI.
 
 ## Quick start
 
@@ -260,7 +430,7 @@ verify    Select a case for a future verification workflow
 bundle    Select a case for a future archive workflow
 ```
 
-`--help`, `--version`, and `--self-test` do not require a primary command.
+`--help`, `--version`, `--self-test`, and `--completion bash` do not require a primary command.
 
 ## Creating a case
 
@@ -368,7 +538,7 @@ Quote each multi-word value so it remains one array element.
 ```bash
 ./tracehold.sh add \
     --case CASE_ID \
-    --file PATH \
+    --file PATH [PATH ...] \
     --type TYPE \
     --apply
 ```
@@ -395,7 +565,7 @@ Example:
 The input file must exist and be a regular file.
 
 > [!CAUTION]
-> `add` is experimental in v1.1.0. Its current validation expects manifest filenames containing the current invocation's run ID, which normally differs from the case-creation run ID. Its direct `cp -a` operation also bypasses the dry-run command wrapper and may overwrite a same-named destination file. Do not use it on irreplaceable evidence until both behaviors are fixed.
+> `add` remains experimental in v1.1.0. It discovers prior case manifests, routes copy and checksum-record operations through the dry-run boundary, requires `--force` for same-named destinations, and captures an initial source SHA-256. It does not yet compare the preserved destination hash, perform an atomic copy transaction, or write full structured provenance. Do not treat the current checksum line as complete chain-of-custody evidence.
 
 ## Collecting evidence
 
@@ -460,6 +630,7 @@ Archive creation is not implemented in v1.1.0.
 | `--force` | Replace `write_file()`-managed artifacts after timestamped backup |
 | `-v`, `--verbose` | Enable diagnostic logging |
 | `--self-test` | Run the built-in temporary-directory smoke test |
+| `--completion bash` | Print the Bash completion adapter generated from the shared command schema |
 | `--version` | Print the current version |
 | `-h`, `--help` | Display CLI help |
 
@@ -664,24 +835,25 @@ The self-test:
 
 - creates a temporary output directory;
 - forces apply mode inside that temporary directory;
-- exercises `new`, `add`, `collect`, `verify`, and `bundle` branches in one process;
-- checks for the run manifest and summary;
+- exercises the primary `new` workflow;
+- checks the generated case, manifests, summary, and initial-triage report;
 - and removes the temporary directory after completion.
 
-It is a useful smoke test, not complete command-level coverage. Because all command branches share one process and one run ID, it does not expose every cross-invocation bug present in normal use.
+It is a useful smoke test, not complete command-level coverage. `add`, `collect`, `verify`, `bundle`, completion behavior, and negative validation paths require separate tests.
 
 ## Known v1.1.0 limitations
 
-1. **`add` manifest validation is run-ID-coupled.** It checks for case and run manifests named with the current invocation's run ID instead of discovering the existing case manifests.
-2. **`add` bypasses dry-run.** Its `cp -a` call is direct rather than routed through `run_cmd()`.
-3. **`add` can overwrite by filename.** A same-named file in the destination evidence directory may be replaced without `--force` backup behavior.
-4. **`collect`, `verify`, and `bundle` are scaffolds.** They do not perform their advertised payload operations.
-5. **Environment, software, and checksum generation are disabled.** The helper calls are commented out.
-6. **Several generated artifacts are placeholders.** This includes `commands/collection.log`, `commands/replay.sh`, and `reports/handoff.md`.
-7. **Case-title sanitization is absent.** Unsafe or awkward title characters flow directly into the case directory name.
-8. **Several fields are not validated.** Timestamp format, profile, reproduction state, status, and confidence accept arbitrary non-option strings.
+1. **Evidence hashing is source-only.** `add` records the selected source SHA-256, but it does not yet hash and compare the preserved destination.
+2. **Evidence ingest is not atomic.** Copying does not yet use a verified temporary destination followed by an atomic final rename.
+3. **Provenance remains minimally structured.** The checksum line does not yet record a stable evidence ID, case-relative destination, ingest result, size, collision action, and destination-verification state.
+4. **Forced evidence replacement uses backup-and-replace semantics.** A future evidence-specific policy should distinguish identical duplicates from same-name/different-content collisions and prefer preserving both where appropriate.
+5. **`collect`, `verify`, and `bundle` are scaffolds.** They do not perform their advertised payload operations.
+6. **Environment, software, and checksum-verification generation are disabled.** The helper calls remain commented out or placeholder-only.
+7. **Several generated artifacts are placeholders.** This includes `commands/collection.log`, `commands/replay.sh`, and `reports/handoff.md`.
+8. **Several fields are not validated.** Timestamp format, reproduction state, status, and confidence accept arbitrary non-option strings.
 9. **The run manifest has a `.txt` extension despite JSON content.**
-10. **The self-test is not independent per command.** Shared process state can hide invocation-boundary defects.
+10. **The self-test covers only `new`.** It does not yet provide independent positive and negative tests for every command.
+11. **Bash completion must be regenerated after schema changes.** The installed adapter is generated, not rewritten automatically on repository update.
 
 ## Troubleshooting
 
@@ -755,9 +927,43 @@ Override it for one run:
 --output-dir /desired/path
 ```
 
-### `add` says a manifest is missing
+### Tab completion is not active
 
-This is a known v1.1.0 defect caused by checking for the current invocation's run ID in an existing case. Do not rename evidence or fabricate manifests to bypass the check; fix the validation logic first.
+Confirm that the completion file exists and is valid:
+
+```bash
+completion_file="$HOME/.local/share/bash-completion/completions/tracehold"
+
+ls -l "$completion_file"
+bash -n "$completion_file"
+```
+
+Load it in the current shell:
+
+```bash
+source "$completion_file"
+```
+
+Confirm the completion function is registered:
+
+```bash
+complete -p tracehold
+```
+
+Regenerate it after command-schema changes:
+
+```bash
+tracehold --completion bash > "$completion_file"
+```
+
+### Case-ID completion shows the wrong case root
+
+Place `--output-dir` before `--case` so completion can resolve the intended root from the words already entered:
+
+```bash
+tracehold add --output-dir /desired/cases --case <TAB>
+```
+
 
 ### `verify` succeeded but did not report checks
 
@@ -785,6 +991,8 @@ Already implemented or substantially complete:
 - [x] capture an initial SHA-256 digest for evidence selected by `add`;
 - [x] isolate the current smoke test from normal case storage;
 - [x] resolve reusable case and manifest paths before validation and execution.
+- [x] centralize command names, required/allowed options, value kinds, aliases, and enums in one shared schema;
+- [x] generate command-contract help and Bash completion from that schema.
 
 The next milestone is to turn the current hash capture into a complete integrity transaction:
 
@@ -1000,7 +1208,8 @@ new → add/collect → verify → handoff → bundle → verify extracted bundl
 
 - [ ] Add installation and uninstall workflows with a configurable prefix.
 
-- [ ] Add Bash completion, with optional Zsh and Fish support later.
+- [x] Add schema-driven Bash completion.
+- [ ] Add optional Zsh and Fish adapters later.
 
 - [ ] Add machine-readable `--json` output for summaries and errors.
 
@@ -1150,6 +1359,7 @@ Before submitting changes:
 ```bash
 bash -n tracehold.sh
 ./tracehold.sh --help >/dev/null
+./tracehold.sh --completion bash | bash -n
 ./tracehold.sh --self-test --verbose
 ```
 
