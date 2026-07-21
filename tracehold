@@ -83,6 +83,12 @@ declare -A WAS_SET=(
     [FILE]=0
     [TYPE]=0
     [OUTPUT_DIR]=0
+
+    # Execution options
+    [APPLY]=0
+    [DRY_RUN]=0
+    [FORCE]=0
+    [VERBOSE]=0
 )
 
 # --- Variadic inputs ---------------------------------------------------------
@@ -135,23 +141,246 @@ declare -A SCRIPT=(
     [SELF_TEST]=0
 )
 
-# --- Command selection -------------------------------------------------------
-
-declare -A COMMANDS=(
-    [NEW]=0
-    [ADD]=0
-    [COLLECT]=0
-    [VERIFY]=0
-    [BUNDLE]=0
-)
+# --- Shared command and option schema ----------------------------------------
+#
+# This is the single source of truth for parsing, required/allowed option
+# validation, generated help, and programmable completion. Add or change a CLI
+# contract here first; the other interfaces consume these definitions.
 
 COMMAND_KEYS=(
-	NEW
-	ADD
-	COLLECT
-	VERIFY
-	BUNDLE
+    NEW
+    ADD
+    COLLECT
+    VERIFY
+    BUNDLE
 )
+
+OPTION_KEYS=(
+    TITLE DESCRIPTION ASSET SEVERITY SITE
+    REPORTED_BY OWNER FIRST_OBSERVED LAST_OBSERVED
+    OPERATIONAL_IMPACT AFFECTED_SCOPE RECENT_CHANGE STATUS
+    REPRO_STATUS CONTAINMENT_STATUS TRIAGE_CONFIDENCE
+    PROFILE CASE FILE TYPE OUTPUT_DIR
+    APPLY DRY_RUN FORCE VERBOSE
+)
+
+declare -A COMMAND_NAME=(
+    [NEW]="new"
+    [ADD]="add"
+    [COLLECT]="collect"
+    [VERIFY]="verify"
+    [BUNDLE]="bundle"
+)
+
+declare -A COMMAND_KEY_BY_NAME=(
+    [new]="NEW"
+    [add]="ADD"
+    [collect]="COLLECT"
+    [verify]="VERIFY"
+    [bundle]="BUNDLE"
+)
+
+declare -A COMMAND_DESCRIPTION=(
+    [NEW]="Create a case directory and initial triage artifacts."
+    [ADD]="Copy one or more evidence files into an existing case. Experimental."
+    [COLLECT]="Collection-profile scaffold; collection is not implemented yet."
+    [VERIFY]="Verification scaffold; integrity checks are not implemented yet."
+    [BUNDLE]="Archive scaffold; .tar.gz creation is not implemented yet."
+)
+
+declare -A COMMAND_REQUIRED=(
+    [NEW]="TITLE DESCRIPTION SEVERITY ASSET"
+    [ADD]="CASE FILE TYPE"
+    [COLLECT]="CASE"
+    [VERIFY]="CASE"
+    [BUNDLE]="CASE"
+)
+
+declare -A COMMAND_ALLOWED=(
+    [NEW]="TITLE DESCRIPTION ASSET SEVERITY SITE REPORTED_BY OWNER FIRST_OBSERVED LAST_OBSERVED OPERATIONAL_IMPACT AFFECTED_SCOPE RECENT_CHANGE STATUS REPRO_STATUS CONTAINMENT_STATUS TRIAGE_CONFIDENCE PROFILE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
+    [ADD]="CASE FILE TYPE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
+    [COLLECT]="CASE PROFILE OUTPUT_DIR APPLY DRY_RUN VERBOSE"
+    [VERIFY]="CASE OUTPUT_DIR APPLY DRY_RUN VERBOSE"
+    [BUNDLE]="CASE OUTPUT_DIR APPLY DRY_RUN FORCE VERBOSE"
+)
+
+declare -A OPTION_CLI=(
+    [TITLE]="--title"
+    [DESCRIPTION]="--description"
+    [ASSET]="--asset"
+    [SEVERITY]="--severity"
+    [SITE]="--site"
+    [REPORTED_BY]="--reported-by"
+    [OWNER]="--owner"
+    [FIRST_OBSERVED]="--first-observed"
+    [LAST_OBSERVED]="--last-observed"
+    [OPERATIONAL_IMPACT]="--operational-impact"
+    [AFFECTED_SCOPE]="--affected-scope"
+    [RECENT_CHANGE]="--recent-change"
+    [STATUS]="--status"
+    [REPRO_STATUS]="--repro-status"
+    [CONTAINMENT_STATUS]="--containment-status"
+    [TRIAGE_CONFIDENCE]="--triage-confidence"
+    [PROFILE]="--profile"
+    [CASE]="--case"
+    [FILE]="--file"
+    [TYPE]="--type"
+    [OUTPUT_DIR]="--output-dir"
+    [APPLY]="--apply"
+    [DRY_RUN]="--dry-run"
+    [FORCE]="--force"
+    [VERBOSE]="--verbose"
+)
+
+declare -A OPTION_KEY_BY_CLI=(
+    [--title]="TITLE"
+    [--description]="DESCRIPTION"
+    [--asset]="ASSET"
+    [--severity]="SEVERITY"
+    [--site]="SITE"
+    [--reported-by]="REPORTED_BY"
+    [--owner]="OWNER"
+    [--first-observed]="FIRST_OBSERVED"
+    [--last-observed]="LAST_OBSERVED"
+    [--operational-impact]="OPERATIONAL_IMPACT"
+    [--affected-scope]="AFFECTED_SCOPE"
+    [--recent-change]="RECENT_CHANGE"
+    [--status]="STATUS"
+    [--repro-status]="REPRO_STATUS"
+    [--containment-status]="CONTAINMENT_STATUS"
+    [--triage-confidence]="TRIAGE_CONFIDENCE"
+    [--profile]="PROFILE"
+    [--case]="CASE"
+    [--file]="FILE"
+    [--type]="TYPE"
+    [--output-dir]="OUTPUT_DIR"
+    [--apply]="APPLY"
+    [--dry-run]="DRY_RUN"
+    [--no-load-run]="DRY_RUN"
+    [--force]="FORCE"
+    [-v]="VERBOSE"
+    [--verbose]="VERBOSE"
+)
+
+declare -A OPTION_KIND=(
+    [TITLE]="scalar"
+    [DESCRIPTION]="scalar"
+    [ASSET]="variadic"
+    [SEVERITY]="enum"
+    [SITE]="variadic"
+    [REPORTED_BY]="scalar"
+    [OWNER]="variadic"
+    [FIRST_OBSERVED]="scalar"
+    [LAST_OBSERVED]="scalar"
+    [OPERATIONAL_IMPACT]="scalar"
+    [AFFECTED_SCOPE]="scalar"
+    [RECENT_CHANGE]="variadic"
+    [STATUS]="scalar"
+    [REPRO_STATUS]="scalar"
+    [CONTAINMENT_STATUS]="scalar"
+    [TRIAGE_CONFIDENCE]="scalar"
+    [PROFILE]="enum"
+    [CASE]="case"
+    [FILE]="file_variadic"
+    [TYPE]="enum"
+    [OUTPUT_DIR]="dir"
+    [APPLY]="flag_true"
+    [DRY_RUN]="flag_false"
+    [FORCE]="flag_true"
+    [VERBOSE]="flag_true"
+)
+
+declare -A OPTION_DEST=(
+    [TITLE]="INPUT[TITLE]"
+    [DESCRIPTION]="INPUT[DESCRIPTION]"
+    [ASSET]="ASSETS"
+    [SEVERITY]="INPUT[SEVERITY]"
+    [SITE]="SITES"
+    [REPORTED_BY]="INPUT[REPORTED_BY]"
+    [OWNER]="OWNERS"
+    [FIRST_OBSERVED]="INPUT[FIRST_OBSERVED]"
+    [LAST_OBSERVED]="INPUT[LAST_OBSERVED]"
+    [OPERATIONAL_IMPACT]="INPUT[OPERATIONAL_IMPACT]"
+    [AFFECTED_SCOPE]="INPUT[AFFECTED_SCOPE]"
+    [RECENT_CHANGE]="RECENT_CHANGES"
+    [STATUS]="INPUT[STATUS]"
+    [REPRO_STATUS]="INPUT[REPRO_STATUS]"
+    [CONTAINMENT_STATUS]="INPUT[CONTAINMENT_STATUS]"
+    [TRIAGE_CONFIDENCE]="INPUT[TRIAGE_CONFIDENCE]"
+    [PROFILE]="INPUT[PROFILE]"
+    [CASE]="INPUT[CASE]"
+    [FILE]="FILES"
+    [TYPE]="INPUT[TYPE]"
+    [OUTPUT_DIR]="INPUT[OUTPUT_DIR]"
+    [APPLY]="SCRIPT[APPLY]"
+    [DRY_RUN]="SCRIPT[APPLY]"
+    [FORCE]="SCRIPT[FORCE]"
+    [VERBOSE]="SCRIPT[VERBOSE]"
+)
+
+declare -A OPTION_TRACK=(
+    [TITLE]="WAS_SET[TITLE]"
+    [DESCRIPTION]="WAS_SET[DESCRIPTION]"
+    [ASSET]="WAS_SET[ASSET]"
+    [SEVERITY]="WAS_SET[SEVERITY]"
+    [SITE]="WAS_SET[SITE]"
+    [REPORTED_BY]="WAS_SET[REPORTED_BY]"
+    [OWNER]="WAS_SET[OWNER]"
+    [FIRST_OBSERVED]="WAS_SET[FIRST_OBSERVED]"
+    [LAST_OBSERVED]="WAS_SET[LAST_OBSERVED]"
+    [OPERATIONAL_IMPACT]="WAS_SET[OPERATIONAL_IMPACT]"
+    [AFFECTED_SCOPE]="WAS_SET[AFFECTED_SCOPE]"
+    [RECENT_CHANGE]="WAS_SET[RECENT_CHANGE]"
+    [STATUS]="WAS_SET[STATUS]"
+    [REPRO_STATUS]="WAS_SET[REPRO_STATUS]"
+    [CONTAINMENT_STATUS]="WAS_SET[CONTAINMENT_STATUS]"
+    [TRIAGE_CONFIDENCE]="WAS_SET[TRIAGE_CONFIDENCE]"
+    [PROFILE]="WAS_SET[PROFILE]"
+    [CASE]="WAS_SET[CASE]"
+    [FILE]="WAS_SET[FILE]"
+    [TYPE]="WAS_SET[TYPE]"
+    [OUTPUT_DIR]="WAS_SET[OUTPUT_DIR]"
+    [APPLY]="WAS_SET[APPLY]"
+    [DRY_RUN]="WAS_SET[DRY_RUN]"
+    [FORCE]="WAS_SET[FORCE]"
+    [VERBOSE]="WAS_SET[VERBOSE]"
+)
+
+declare -A OPTION_ENUM=(
+    [SEVERITY]="P0 P1 P2 P3 P4"
+    [PROFILE]="default general environment"
+    [TYPE]="raw photo log note"
+)
+
+declare -A OPTION_METAVAR=(
+    [TITLE]="SLUG"
+    [DESCRIPTION]="STRING"
+    [ASSET]="ID"
+    [SEVERITY]="P0|P1|P2|P3|P4"
+    [SITE]="ID"
+    [REPORTED_BY]="STRING"
+    [OWNER]="STRING"
+    [FIRST_OBSERVED]="TIME"
+    [LAST_OBSERVED]="TIME"
+    [OPERATIONAL_IMPACT]="STRING"
+    [AFFECTED_SCOPE]="STRING"
+    [RECENT_CHANGE]="STRING"
+    [STATUS]="STRING"
+    [REPRO_STATUS]="STRING"
+    [CONTAINMENT_STATUS]="STRING"
+    [TRIAGE_CONFIDENCE]="STRING"
+    [PROFILE]="NAME"
+    [CASE]="CASE_ID"
+    [FILE]="PATH"
+    [TYPE]="raw|photo|log|note"
+    [OUTPUT_DIR]="DIR"
+)
+
+declare -A COMMANDS=()
+for command_key in "${COMMAND_KEYS[@]}"; do
+    COMMANDS["$command_key"]=0
+done
+unset command_key
 
 # --- Error codes -------------------------------------------------------------
 
@@ -1173,6 +1402,367 @@ write_summary() {
 # region S7. CLI
 # =============================================================================
 
+# --- Shared command-contract helpers -----------------------------------------
+
+command_count() {
+    local command_key
+    local count=0
+
+    for command_key in "${COMMAND_KEYS[@]}"; do
+        (( count += COMMANDS[$command_key] ))
+    done
+
+    printf '%d\n' "$count"
+}
+
+active_command_key() {
+    local command_key
+
+    for command_key in "${COMMAND_KEYS[@]}"; do
+        if (( COMMANDS[$command_key] )); then
+            printf '%s\n' "$command_key"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+option_is_set() {
+    local option_key="${1:?option_is_set requires an option key}"
+    (( ${WAS_SET[$option_key]:-0} == 1 ))
+}
+
+word_in_schema_list() {
+    local needle="${1:?word_in_schema_list requires a value}"
+    local list="${2-}"
+    local item
+    local -a items=()
+
+    IFS=' ' read -r -a items <<< "$list"
+    for item in "${items[@]}"; do
+        [[ "$item" == "$needle" ]] && return 0
+    done
+
+    return 1
+}
+
+format_contract_option() {
+    local option_key="${1:?format_contract_option requires an option key}"
+    local cli="${OPTION_CLI[$option_key]}"
+    local kind="${OPTION_KIND[$option_key]}"
+    local metavar="${OPTION_METAVAR[$option_key]-}"
+
+    case "$kind" in
+        flag_true|flag_false)
+            printf '%s' "$cli"
+            ;;
+        variadic|file_variadic)
+            printf '%s %s [...]' "$cli" "$metavar"
+            ;;
+        *)
+            printf '%s %s' "$cli" "$metavar"
+            ;;
+    esac
+}
+
+print_command_summary() {
+    local command_key
+
+    printf 'Commands:\n'
+    for command_key in "${COMMAND_KEYS[@]}"; do
+        printf '\t%-9s %s\n' \
+            "${COMMAND_NAME[$command_key]}" \
+            "${COMMAND_DESCRIPTION[$command_key]}"
+    done
+}
+
+print_command_contracts() {
+    local command_key option_key
+    local required_text allowed_text
+    local -a required=() allowed=() optional=()
+
+    printf 'Command contracts (generated from the shared schema):\n'
+
+    for command_key in "${COMMAND_KEYS[@]}"; do
+        required_text="${COMMAND_REQUIRED[$command_key]}"
+        allowed_text="${COMMAND_ALLOWED[$command_key]}"
+        IFS=' ' read -r -a required <<< "$required_text"
+        IFS=' ' read -r -a allowed <<< "$allowed_text"
+        optional=()
+
+        for option_key in "${allowed[@]}"; do
+            if ! word_in_schema_list "$option_key" "$required_text"; then
+                optional+=( "$option_key" )
+            fi
+        done
+
+        printf '\t%s\n' "${COMMAND_NAME[$command_key]}"
+        printf '\t  required:\n'
+        if (( ${#required[@]} == 0 )); then
+            printf '\t    <none>\n'
+        else
+            for option_key in "${required[@]}"; do
+                printf '\t    '
+                format_contract_option "$option_key"
+                printf '\n'
+            done
+        fi
+
+        printf '\t  optional:\n'
+        if (( ${#optional[@]} == 0 )); then
+            printf '\t    <none>\n'
+        else
+            for option_key in "${optional[@]}"; do
+                printf '\t    '
+                format_contract_option "$option_key"
+                printf '\n'
+            done
+        fi
+    done
+}
+
+# --- Programmable completion -------------------------------------------------
+
+print_bash_completion() {
+    cat <<'BASH_COMPLETION'
+# Bash programmable completion for Tracehold.
+# Generated by: tracehold --completion bash
+
+_tracehold() {
+    local executable="${COMP_WORDS[0]}"
+    local mode
+    local -a response=()
+
+    mapfile -t response < <(
+        "$executable" __complete "$COMP_CWORD" "${COMP_WORDS[@]}" 2>/dev/null
+    )
+
+    mode="${response[0]-}"
+    case "$mode" in
+        __TRACEHOLD_VALUES__)
+            compopt +o bashdefault +o default 2>/dev/null || true
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_FILES__)
+            compopt -o filenames
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_DIRS__)
+            compopt -o filenames
+            COMPREPLY=( "${response[@]:1}" )
+            ;;
+        __TRACEHOLD_NONE__)
+            compopt +o bashdefault +o default 2>/dev/null || true
+            COMPREPLY=()
+            ;;
+        *)
+            COMPREPLY=()
+            ;;
+    esac
+}
+
+complete -o bashdefault -o default -F _tracehold \
+    tracehold tracehold.sh ./tracehold.sh
+BASH_COMPLETION
+}
+
+completion_option_is_present() {
+    local target_key="${1:?completion_option_is_present requires an option key}"
+    local cword="${2:?completion_option_is_present requires COMP_CWORD}"
+    shift 2
+    local -a words=( "$@" )
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        [[ "$token_key" == "$target_key" ]] && return 0
+    done
+
+    return 1
+}
+
+completion_option_has_value() {
+    local target_key="${1:?completion_option_has_value requires an option key}"
+    local cword="${2:?completion_option_has_value requires COMP_CWORD}"
+    shift 2
+    local -a words=( "$@" )
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        if [[ "$token_key" == "$target_key" ]]; then
+            if (( i + 1 < cword )) &&
+               [[ -n "${words[i + 1]-}" ]] &&
+               [[ "${words[i + 1]}" != -* ]]; then
+                return 0
+            fi
+        fi
+    done
+
+    return 1
+}
+
+completion_option_satisfied() {
+    local option_key="${1:?completion_option_satisfied requires an option key}"
+    local cword="${2:?completion_option_satisfied requires COMP_CWORD}"
+    shift 2
+    local kind="${OPTION_KIND[$option_key]}"
+
+    case "$kind" in
+        flag_true|flag_false)
+            completion_option_is_present "$option_key" "$cword" "$@"
+            ;;
+        *)
+            completion_option_has_value "$option_key" "$cword" "$@"
+            ;;
+    esac
+}
+
+completion_output_dir() {
+    local cword="${1:?completion_output_dir requires COMP_CWORD}"
+    shift
+    local -a words=( "$@" )
+    local output_dir="${OUTPUT_DIR:-${ENGINEERING_DIR}/projects/active/${SCRIPT_NAME%.sh}/cases}"
+    local i token token_key
+
+    for (( i = 1; i < cword; i++ )); do
+        token="${words[i]-}"
+        [[ -n "$token" ]] || continue
+        token_key="${OPTION_KEY_BY_CLI[$token]-}"
+        if [[ "$token_key" == "OUTPUT_DIR" ]] && (( i + 1 < cword )); then
+            output_dir="${words[i + 1]}"
+            break
+        fi
+    done
+
+    case "$output_dir" in
+        '~') output_dir="$HOME" ;;
+        '~/'*) output_dir="$HOME/${output_dir#~/}" ;;
+    esac
+
+    printf '%s\n' "$output_dir"
+}
+
+completion_emit_values() {
+    local current="${1-}"
+    shift || true
+    local candidate
+
+    printf '__TRACEHOLD_VALUES__\n'
+    for candidate in "$@"; do
+        [[ "$candidate" == "$current"* ]] && printf '%s\n' "$candidate"
+    done
+}
+
+complete_cli() {
+    local cword="${1-}"
+    shift || true
+    local -a words=( "$@" )
+    local current previous command_key option_key kind output_dir path
+    local -a candidates=()
+    local i
+
+    [[ "$cword" =~ ^[0-9]+$ ]] || return 0
+
+    current="${words[cword]-}"
+    previous="${words[cword - 1]-}"
+    command_key=""
+
+    for (( i = 1; i < cword; i++ )); do
+        [[ -n "${words[i]-}" ]] || continue
+        if [[ -n "${COMMAND_KEY_BY_NAME[${words[i]}]-}" ]]; then
+            command_key="${COMMAND_KEY_BY_NAME[${words[i]}]}"
+            break
+        fi
+    done
+
+    if [[ "$previous" == "--completion" ]]; then
+        completion_emit_values "$current" bash
+        return 0
+    fi
+
+    if [[ -z "$command_key" ]]; then
+        candidates=( new add collect verify bundle --help --version --self-test --completion )
+        completion_emit_values "$current" "${candidates[@]}"
+        return 0
+    fi
+
+    option_key=""
+    if [[ -n "$previous" ]]; then
+        option_key="${OPTION_KEY_BY_CLI[$previous]-}"
+    fi
+    if [[ -n "$option_key" ]]; then
+        kind="${OPTION_KIND[$option_key]}"
+        case "$kind" in
+            enum)
+                IFS=' ' read -r -a candidates <<< "${OPTION_ENUM[$option_key]}"
+                completion_emit_values "$current" "${candidates[@]}"
+                return 0
+                ;;
+            case)
+                output_dir="$(completion_output_dir "$cword" "${words[@]}")"
+                candidates=()
+                if [[ -d "$output_dir" ]]; then
+                    shopt -s nullglob
+                    for path in "$output_dir"/"${CASE_PREFIX}"_*; do
+                        [[ -d "$path" ]] || continue
+                        candidates+=( "${path##*/}" )
+                    done
+                    shopt -u nullglob
+                fi
+                completion_emit_values "$current" "${candidates[@]}"
+                return 0
+                ;;
+            file_variadic)
+                printf '__TRACEHOLD_FILES__\n'
+                compgen -f -- "$current"
+                return 0
+                ;;
+            dir)
+                printf '__TRACEHOLD_DIRS__\n'
+                compgen -d -- "$current"
+                return 0
+                ;;
+            scalar|variadic)
+                printf '__TRACEHOLD_NONE__\n'
+                return 0
+                ;;
+        esac
+    fi
+
+    local -a required_options=() allowed_options=()
+    IFS=' ' read -r -a required_options <<< "${COMMAND_REQUIRED[$command_key]}"
+    IFS=' ' read -r -a allowed_options <<< "${COMMAND_ALLOWED[$command_key]}"
+
+    for option_key in "${required_options[@]}"; do
+        if ! completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
+            completion_emit_values "$current" "${OPTION_CLI[$option_key]}"
+            return 0
+        fi
+    done
+
+    candidates=()
+    for option_key in "${allowed_options[@]}"; do
+        if [[ "$option_key" == "APPLY" || "$option_key" == "DRY_RUN" ]]; then
+            if completion_option_is_present APPLY "$cword" "${words[@]}" ||
+               completion_option_is_present DRY_RUN "$cword" "${words[@]}"; then
+                continue
+            fi
+        elif completion_option_satisfied "$option_key" "$cword" "${words[@]}"; then
+            continue
+        fi
+
+        candidates+=( "${OPTION_CLI[$option_key]}" )
+    done
+
+    completion_emit_values "$current" "${candidates[@]}"
+}
+
 # --- Usage text --------------------------------------------------------------
 
 usage() {
@@ -1203,12 +1793,11 @@ Usage:
 Exactly one command is required unless --help, --version, or --self-test is
 used.
 
-Commands:
-	new       Create a case directory and initial triage artifacts.
-	add       Copy one or more evidence files into an existing case. Experimental.
-	collect   Collection-profile scaffold; collection is not implemented yet.
-	verify    Verification scaffold; integrity checks are not implemented yet.
-	bundle    Archive scaffold; .tar.gz creation is not implemented yet.
+USAGE
+    print_command_summary
+    printf '\n'
+    print_command_contracts
+    cat <<'USAGE'
 
 Command syntax:
 	tracehold new REQUIRED_OPTIONS [CASE_OPTIONS] [EXECUTION_OPTIONS]
@@ -1398,6 +1987,10 @@ EXECUTION OPTIONS
 	--self-test
 		Run the built-in temporary-directory smoke test. No command required.
 
+	--completion bash
+		Print a Bash completion script generated from Tracehold's shared
+		command schema. See README.md for installation instructions.
+
 	--version
 		Print the current version and exit.
 
@@ -1500,29 +2093,53 @@ collect_cli_values() {
 }
 
 select_command() {
-    local command="$1"
-    local selected_count
+    local command="${1:?select_command requires a command}"
+    local command_key="${COMMAND_KEY_BY_NAME[$command]-}"
 
-    selected_count=$((
-        COMMANDS[NEW]
-        + COMMANDS[ADD]
-        + COMMANDS[COLLECT]
-        + COMMANDS[VERIFY]
-        + COMMANDS[BUNDLE]
-    ))
+    [[ -n "$command_key" ]] || hardstop "Unknown command: ${command}" "$EX_IOERR"
+    (( $(command_count) == 0 )) || hardstop "Only one command may be selected" "$EX_USAGE"
 
-    (( selected_count == 0 )) || hardstop "Only one command may be selected" "$EX_USAGE"
-
-    case "$command" in
-        new)     COMMANDS[NEW]=1 ;;
-        add)     COMMANDS[ADD]=1 ;;
-        collect) COMMANDS[COLLECT]=1 ;;
-        verify)  COMMANDS[VERIFY]=1 ;;
-        bundle)  COMMANDS[BUNDLE]=1 ;;
-        *)       hardstop "Unknown command: ${command}" "$EX_IOERR" ;;
-    esac
-
+    COMMANDS[$command_key]=1
     debug "Command '${command}' selected"
+}
+
+parse_schema_option() {
+    local option="${1:?parse_schema_option requires an option}"
+    local option_key="${OPTION_KEY_BY_CLI[$option]-}"
+    local kind destination_name was_set_name
+
+    [[ -n "$option_key" ]] || return 1
+
+    kind="${OPTION_KIND[$option_key]}"
+    destination_name="${OPTION_DEST[$option_key]}"
+    was_set_name="${OPTION_TRACK[$option_key]}"
+
+    case "$kind" in
+        scalar|enum|case|dir)
+            set_cli_value "$option" "$destination_name" "$was_set_name" "${2-}"
+            PARSE_TOKENS_CONSUMED=2
+            ;;
+        variadic|file_variadic)
+            shift
+            collect_cli_values "$option" "$destination_name" "$was_set_name" "$@"
+            PARSE_TOKENS_CONSUMED=$(( CLI_VALUES_CONSUMED + 1 ))
+            ;;
+        flag_true|flag_false)
+            local -n destination="$destination_name"
+            local -n was_set="$was_set_name"
+
+            if [[ "$kind" == "flag_true" ]]; then
+                destination=1
+            else
+                destination=0
+            fi
+            was_set=1
+            PARSE_TOKENS_CONSUMED=1
+            ;;
+        *)
+            hardstop "Internal error: unsupported option kind '${kind}' for ${option}" "$EX_SOFTWARE"
+            ;;
+    esac
 }
 
 sync_variadic_inputs() {
@@ -1551,145 +2168,45 @@ sync_variadic_inputs() {
 
 parse_args() {
     local CLI_VALUES_CONSUMED=0
+    local PARSE_TOKENS_CONSUMED=0
 
     while (( $# > 0 )); do
+        if [[ -n "$1" && -n "${OPTION_KEY_BY_CLI[$1]-}" ]]; then
+            parse_schema_option "$@"
+            shift "$PARSE_TOKENS_CONSUMED"
+            continue
+        fi
+
+        if [[ -n "$1" && -n "${COMMAND_KEY_BY_NAME[$1]-}" ]]; then
+            select_command "$1"
+            shift
+            continue
+        fi
+
         case "$1" in
-            # Case description
-            --title)
-                set_cli_value "$1" "INPUT[TITLE]" "WAS_SET[TITLE]" "${2-}"
-                shift 2
-                ;;
-            --description)
-                set_cli_value "$1" "INPUT[DESCRIPTION]" "WAS_SET[DESCRIPTION]" "${2-}"
-                shift 2
-                ;;
-            --asset)
-                shift
-                collect_cli_values "--asset" ASSETS "WAS_SET[ASSET]" "$@"
-                shift "$CLI_VALUES_CONSUMED"
-                ;;
-            --severity)
-                set_cli_value "$1" "INPUT[SEVERITY]" "WAS_SET[SEVERITY]" "${2-}"
-                shift 2
-                ;;
-            --site)
-                shift
-                collect_cli_values "--site" SITES "WAS_SET[SITE]" "$@"
-                shift "$CLI_VALUES_CONSUMED"
-                ;;
-
-            # Ownership and timeline
-            --reported-by)
-                set_cli_value "$1" "INPUT[REPORTED_BY]" "WAS_SET[REPORTED_BY]" "${2-}"
-                shift 2
-                ;;
-            --owner)
-                shift
-                collect_cli_values "--owner" OWNERS "WAS_SET[OWNER]" "$@"
-                shift "$CLI_VALUES_CONSUMED"
-                ;;
-            --first-observed)
-                set_cli_value "$1" "INPUT[FIRST_OBSERVED]" "WAS_SET[FIRST_OBSERVED]" "${2-}"
-                shift 2
-                ;;
-            --last-observed)
-                set_cli_value "$1" "INPUT[LAST_OBSERVED]" "WAS_SET[LAST_OBSERVED]" "${2-}"
-                shift 2
-                ;;
-
-            # Triage state
-            --operational-impact)
-                set_cli_value "$1" "INPUT[OPERATIONAL_IMPACT]" "WAS_SET[OPERATIONAL_IMPACT]" "${2-}"
-                shift 2
-                ;;
-            --affected-scope)
-                set_cli_value "$1" "INPUT[AFFECTED_SCOPE]" "WAS_SET[AFFECTED_SCOPE]" "${2-}"
-                shift 2
-                ;;
-            --recent-change)
-                shift
-                collect_cli_values "--recent-change" RECENT_CHANGES "WAS_SET[RECENT_CHANGE]" "$@"
-                shift "$CLI_VALUES_CONSUMED"
-                ;;
-            --status)
-                set_cli_value "$1" "INPUT[STATUS]" "WAS_SET[STATUS]" "${2-}"
-                shift 2
-                ;;
-            --repro-status)
-                set_cli_value "$1" "INPUT[REPRO_STATUS]" "WAS_SET[REPRO_STATUS]" "${2-}"
-                shift 2
-                ;;
-            --containment-status)
-                set_cli_value "$1" "INPUT[CONTAINMENT_STATUS]" "WAS_SET[CONTAINMENT_STATUS]" "${2-}"
-                shift 2
-                ;;
-            --triage-confidence)
-                set_cli_value "$1" "INPUT[TRIAGE_CONFIDENCE]" "WAS_SET[TRIAGE_CONFIDENCE]" "${2-}"
-                shift 2
-                ;;
-
-            # Case and evidence selection
-            --profile)
-                set_cli_value "$1" "INPUT[PROFILE]" "WAS_SET[PROFILE]" "${2-}"
-                shift 2
-                ;;
-            --case)
-                set_cli_value "$1" "INPUT[CASE]" "WAS_SET[CASE]" "${2-}"
-                shift 2
-                ;;
-            --file)
-				shift
-				collect_cli_values "--file" FILES "WAS_SET[FILE]" "$@"
-                shift "$CLI_VALUES_CONSUMED"
-                ;;
-            --type)
-                set_cli_value "$1" "INPUT[TYPE]" "WAS_SET[TYPE]" "${2-}"
-                shift 2
-                ;;
-            --output-dir)
-                set_cli_value "$1" "INPUT[OUTPUT_DIR]" "WAS_SET[OUTPUT_DIR]" "${2-}"
-                shift 2
-                ;;
-
-            # Execution behavior
-            --apply)
-                SCRIPT[APPLY]=1
-                shift
-                ;;
-            --dry-run|--no-load-run)
-                SCRIPT[APPLY]=0
-                shift
-                ;;
-            --force)
-                SCRIPT[FORCE]=1
-                shift
-                ;;
-            -v|--verbose)
-                SCRIPT[VERBOSE]=1
-                shift
-                ;;
             --self-test)
                 SCRIPT[SELF_TEST]=1
                 shift
                 ;;
+            --completion)
+                [[ "${2-}" == "bash" ]] \
+                    || hardstop "--completion currently supports only: bash" "$EX_USAGE"
+                print_bash_completion
+                exit 0
+                ;;
             --version)
-                printf '%s\n' "$VERSION"
+                printf '%s
+' "$VERSION"
                 exit 0
                 ;;
             -h|--help)
                 usage
                 exit 0
                 ;;
-
-            # Commands
-            new|add|collect|verify|bundle)
-                select_command "$1"
-                shift
-                ;;
-
             --)
                 shift
-                (( $# == 0 )) || hardstop "Unexpected positional argument after --: $1" "$EX_IOERR"
+                (( $# == 0 )) \
+                    || hardstop "Unexpected positional argument after --: $1" "$EX_IOERR"
                 break
                 ;;
             -*)
@@ -1704,6 +2221,57 @@ parse_args() {
     sync_variadic_inputs
 }
 
+validate_command_contract() {
+    local command_key option_key
+    local -a required_options=() allowed_options=()
+
+    command_key="$(active_command_key)" \
+        || hardstop "Internal state error: no active command" "$EX_SOFTWARE"
+
+    IFS=' ' read -r -a required_options <<< "${COMMAND_REQUIRED[$command_key]}"
+    IFS=' ' read -r -a allowed_options <<< "${COMMAND_ALLOWED[$command_key]}"
+
+    for option_key in "${required_options[@]}"; do
+        option_is_set "$option_key" \
+            || hardstop "Input ${OPTION_CLI[$option_key]} required for '${COMMAND_NAME[$command_key]}'" "$EX_USAGE"
+    done
+
+    for option_key in "${OPTION_KEYS[@]}"; do
+        option_is_set "$option_key" || continue
+
+        word_in_schema_list "$option_key" "${COMMAND_ALLOWED[$command_key]}" \
+            || hardstop "${OPTION_CLI[$option_key]} is not valid with the '${COMMAND_NAME[$command_key]}' command" "$EX_USAGE"
+    done
+}
+
+validate_enum_options() {
+    local option_key allowed value item matched
+    local destination_name
+    local -a allowed_values=()
+
+    for option_key in "${OPTION_KEYS[@]}"; do
+        [[ "${OPTION_KIND[$option_key]}" == "enum" ]] || continue
+        option_is_set "$option_key" || continue
+
+        destination_name="${OPTION_DEST[$option_key]}"
+        local -n value_ref="$destination_name"
+        value="$value_ref"
+        allowed="${OPTION_ENUM[$option_key]}"
+        matched=0
+        IFS=' ' read -r -a allowed_values <<< "$allowed"
+
+        for item in "${allowed_values[@]}"; do
+            if [[ "$value" == "$item" ]]; then
+                matched=1
+                break
+            fi
+        done
+
+        (( matched )) \
+            || hardstop "Invalid ${OPTION_CLI[$option_key]} '${value}'; expected one of: ${allowed}" "$EX_USAGE"
+    done
+}
+
 # =============================================================================
 # endregion S7. CLI
 # =============================================================================
@@ -1716,40 +2284,25 @@ validate_config() {
     local command_count
     local file
     local case_regex
+    local regex_status
 
      info "running validate_config..."
 
-    command_count=$((
-        COMMANDS[NEW]
-        + COMMANDS[ADD]
-        + COMMANDS[COLLECT]
-        + COMMANDS[VERIFY]
-        + COMMANDS[BUNDLE]
-    ))
+    command_count="$(command_count)"
     debug "command_count: $command_count"
 
     (( command_count == 1 )) \
         || hardstop "Select exactly one command: new, add, collect, verify, or bundle" "$EX_USAGE"
 
+    validate_command_contract
+    validate_enum_options
+
     [[ "${CASE_PREFIX}" == [[:alnum:]][[:alnum:]] ]] \
         || hardstop "Invalid CASE_PREFIX -- must be 2-char alphanumeric" "$EX_USAGE"
 
     if (( COMMANDS[NEW] )); then
-        (( WAS_SET[CASE] == 0 )) \
-            || hardstop "--case cannot be used with the 'new' command" "$EX_USAGE"
-        (( WAS_SET[TITLE] )) \
-            || hardstop "Input --title required" "$EX_USAGE"
-        (( WAS_SET[DESCRIPTION] )) \
-            || hardstop "Input --description required" "$EX_USAGE"
-        (( WAS_SET[SEVERITY] )) \
-            || hardstop "Input --severity required" "$EX_USAGE"
-        (( WAS_SET[ASSET] )) \
-            || hardstop "Input --asset required" "$EX_USAGE"
-
         [[ "${INPUT[TITLE]}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
             || hardstop "Title must contain only letters, numbers, dots, underscores, and hyphens" "$EX_USAGE"
-        [[ "${INPUT[SEVERITY]}" =~ ^P[0-4]$ ]] \
-            || hardstop "Invalid --severity '${INPUT[SEVERITY]}'; expected P0 through P4" "$EX_USAGE"
 
         [[ -n "$CASE_DIR" && -n "$MANIFEST_DIR" ]] \
             || hardstop "Internal state resolution failed for new case" "$EX_SOFTWARE"
@@ -1758,13 +2311,7 @@ validate_config() {
         return 0
     fi
 
-    # All other commands require the following conditions:
-    (( WAS_SET[TITLE] == 0 )) \
-        || hardstop "--title is only valid with the 'new' command" "$EX_USAGE"
-    (( WAS_SET[CASE] )) \
-        || hardstop "Input --case required" "$EX_USAGE"
-
-
+    # All other commands require an existing case selected by the shared contract.
     case_regex="^${CASE_PREFIX}_[0-9]{8}_[0-9]{6}_UTC_[A-Za-z0-9_.-]*$"
     if [[ "${INPUT[CASE]}" =~ $case_regex ]]; then
         debug "Case-ID validated: <${INPUT[CASE]}>"
@@ -1804,35 +2351,19 @@ validate_config() {
     # end universal conditions
 
     if (( COMMANDS[ADD] )); then
-        (( WAS_SET[FILE] )) \
-            || hardstop "Input --file required" "$EX_USAGE"
-        (( WAS_SET[TYPE] )) \
-            || hardstop "Input --type required" "$EX_USAGE"
-
         for file in "${FILES[@]}"; do
             assert_file_exists "$file"
             debug "Verifying input file exists: <$file>"
         done
 
-        case "${INPUT[TYPE]}" in
-            raw|photo|log|note)
-                log "File type validated: ${INPUT[TYPE]}"
-                ;;
-            *)
-                hardstop "Invalid --type '${INPUT[TYPE]}'; expected raw, photo, log, or note" "$EX_IOERR"
-                ;;
-        esac
+        log "File type validated: ${INPUT[TYPE]}"
     fi
 
     if (( COMMANDS[COLLECT] )); then
         debug "Running validate_config COLLECT"
         (( WAS_SET[PROFILE] )) \
-            || warn "No input --profile chosen, setting 'default'";
-
-        case "${INPUT[PROFILE]}" in
-            default|general|environment) info "${INPUT[PROFILE]}" selected ;;
-            *) hardstop "Unknown profile selected: ${INPUT[PROFILE]}; expected default, general, or environment" "$EX_USAGE" ;;
-        esac
+            || warn "No input --profile chosen; using 'default'"
+        info "${INPUT[PROFILE]} selected"
     fi
 
     if (( COMMANDS[VERIFY] )); then
@@ -1997,6 +2528,18 @@ run_self_test() {
 # =============================================================================
 
 main() {
+    if [[ "${1-}" == "__complete" ]]; then
+        shift
+        complete_cli "$@"
+        return 0
+    fi
+
+    if [[ "${1-}" == "--completion" ]]; then
+        [[ "${2-}" == "bash" && $# -eq 2 ]] \
+            || hardstop "Usage: ${SCRIPT_NAME} --completion bash" "$EX_USAGE"
+        print_bash_completion
+        return 0
+    fi
 
     install_runtime
 
