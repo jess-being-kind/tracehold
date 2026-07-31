@@ -1,0 +1,44 @@
+{
+  "schema_version": "1.0",
+  "case_id": "CASE-2026-0007",
+  "run_id": "29_07_2026_09_54_00_UTC",
+  "created_utc": "2026-07-29T16:54:00Z",
+  "operator": {
+    "name": "V Halcyon",
+    "tool": "traceproof",
+    "tool_version": "v0_1_0"
+  },
+  "summary": {
+    "file_count": 3,
+    "total_bytes": 5224,
+    "integrity_status": "recorded"
+  },
+  "files": [
+    {
+      "relative_path": "evidence/controller.bin",
+      "size_bytes": 4096,
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "modified_utc": "2026-07-29T16:20:00Z",
+      "tags": [
+        "controller",
+        "binary"
+      ]
+    },
+    {
+      "relative_path": "logs/session.txt",
+      "size_bytes": 1024,
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "modified_utc": "2026-07-29T16:21:00Z",
+      "tags": [
+        "log"
+      ]
+    },
+    {
+      "relative_path": "metadata/device.json",
+      "size_bytes": 104,
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+      "modified_utc": "2026-07-29T16:22:00Z",
+      "tags": []
+    }
+  ]
+}

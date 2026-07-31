@@ -1,0 +1,55 @@
+{
+  "system": {
+    "nodes": [
+      {
+        "node_id": "NODE-A",
+        "state": "ready",
+        "channels": [
+          {
+            "name": "voltage",
+            "value": 12.4,
+            "units": "V"
+          },
+          {
+            "name": "current",
+            "value": 1.8,
+            "units": "A"
+          }
+        ]
+      },
+      {
+        "node_id": "NODE-B",
+        "state": "fault",
+        "channels": [
+          {
+            "name": "temperature",
+            "value": 84.2,
+            "units": "C"
+          },
+          {
+            "name": "faults",
+            "value": [
+              {
+                "code": 17,
+                "active": true
+              },
+              {
+                "code": 22,
+                "active": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "switch": {
+      "connected": true,
+      "ports": [
+        1,
+        2,
+        3,
+        4
+      ]
+    }
+  }
+}
