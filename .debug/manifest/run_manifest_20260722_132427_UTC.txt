@@ -1,0 +1,96 @@
+{
+  "schema_version": "1.0",
+  "manifest_type": "tracehold.run_manifest",
+  "metadata": {
+    "tracehold_version": "1.1.0",
+    "author": "V Halcyon",
+    "script": {
+      "name": "tracehold",
+      "path": "/home/jess/Vec/Engineering/scripts/active/tracehold",
+      "directory": "/home/jess/Vec/Engineering/scripts/active"
+    }
+  },
+  "execution": {
+    "run_id": "20260722_132427_UTC",
+    "generated_at_utc": "2026-07-22T13:24:27Z",
+    "working_directory": "/home/jess/Vec/Engineering/projects/active/tracehold/cases",
+    "process_id": 2563800,
+    "bash_process_id": 2563817,
+    "mode": "apply",
+    "flags": {
+      "apply": true,
+      "force": false,
+      "verbose": false,
+      "self_test": false
+    }
+  },
+  "commands": {
+    "flags": {
+      "new": true,
+      "add": false,
+      "collect": false,
+      "verify": false,
+      "bundle": false
+    },
+    "active": [
+      "new"
+    ],
+    "active_count": 1
+  },
+  "inputs": {
+    "case_description": {
+      "title": "tracehold_refactor_v1_1_0",
+      "description": "This is just a refactor test",
+      "asset": "N/A",
+      "severity": "P4",
+      "site": ""
+    },
+    "ownership_and_timeline": {
+      "reported_by": "Unknown",
+      "owner": "",
+      "first_observed": "Unknown",
+      "last_observed": "Unknown"
+    },
+    "triage_state": {
+      "operational_impact": "Not yet assessed",
+      "affected_scope": "Unknown",
+      "recent_change": "",
+      "status": "Open — pending initial triage",
+      "reproduction_status": "Not attempted",
+      "containment_status": "Not yet documented",
+      "triage_confidence": "Low — initial information only"
+    },
+    "case_and_evidence": {
+      "profile": "default",
+      "case_id": "TH_20260722_132427_UTC_tracehold_refactor_v1_1_0",
+      "file": "",
+      "evidence_type": "",
+      "output_directory": "/home/jess/Vec/Engineering/projects/active/tracehold/cases"
+    }
+  },
+  "input_provenance": {
+    "was_set": {
+      "title": true,
+      "description": true,
+      "asset": true,
+      "severity": true,
+      "site": false,
+      "reported_by": false,
+      "owner": false,
+      "first_observed": false,
+      "last_observed": false,
+      "operational_impact": false,
+      "affected_scope": false,
+      "recent_change": false,
+      "status": false,
+      "reproduction_status": false,
+      "containment_status": false,
+      "triage_confidence": false,
+      "profile": false,
+      "case_id": false,
+      "file": false,
+      "evidence_type": false,
+      "output_directory": false
+    }
+  }
+}

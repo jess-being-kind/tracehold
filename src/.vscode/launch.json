@@ -1,0 +1,398 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Tracehold: Custom Args (Sandbox)",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 1
+      },
+      "argsString": "${input:traceholdArgs}"
+    },
+    {
+      "name": "Tracehold: Self-Test",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 2
+      },
+      "args": [
+        "--self-test",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: New / Dry Run",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 3
+      },
+      "args": [
+        "new",
+        "--title",
+        "debug_link_loss",
+        "--description",
+        "Debugger profile for an intermittent link-loss case",
+        "--severity",
+        "P2",
+        "--asset",
+        "AV-DEBUG-001",
+        "--apply",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: New / Apply to Debug Sandbox",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 4
+      },
+      "args": [
+        "new",
+        "--title",
+        "debug_link_loss",
+        "--description",
+        "Debugger profile for an intermittent link-loss case",
+        "--severity",
+        "P2",
+        "--asset",
+        "AV-DEBUG-001",
+        "--site",
+        "LAB-DEBUG",
+        "--apply",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Add / Dry Run",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 5
+      },
+      "args": [
+        "add",
+        "--case",
+        "TH_20260731_153454_UTC_debug_link_loss",
+        "--file",
+        "${workspaceFolder}/fixtures/valid_unicode.json",
+        "--type",
+        "raw",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Add / Apply to Debug Sandbox",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 6
+      },
+      "args": [
+        "add",
+        "--case",
+        "${input:traceholdCaseId}",
+        "--file",
+        "${input:traceholdEvidenceFile}",
+        "--type",
+        "${input:traceholdEvidenceType}",
+        "--apply",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Collect / Dry Run",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 7
+      },
+      "args": [
+        "collect",
+        "--case",
+        "${input:traceholdCaseId}",
+        "--profile",
+        "${input:traceholdProfile}",
+        "--dry-run",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Verify / Dry Run",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 8
+      },
+      "args": [
+        "verify",
+        "--case",
+        "${input:traceholdCaseId}",
+        "--dry-run",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Bundle / Dry Run",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Tracehold",
+        "order": 9
+      },
+      "args": [
+        "bundle",
+        "--case",
+        "${input:traceholdCaseId}",
+        "--dry-run",
+        "--verbose"
+      ]
+    },
+    {
+      "name": "Tracehold: Current Bash File",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${file}",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": false,
+      "trace": false,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Development",
+        "order": 1
+      },
+      "args": []
+    },
+    {
+      "name": "Tracehold: BashDB Adapter Diagnostics",
+      "type": "bashdb",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/tracehold",
+      "env": {
+        "BASH_ENV": "${workspaceFolder}/.vscode/env/${input:hhShift}.env",
+        "HH_SHIFT": "${input:hhShift}",
+        "TERM": "xterm-256color",
+        "COLORTERM": "truecolor",
+        "OUTPUT_DIR": "${workspaceFolder}/.debug/cases"
+      },
+      "pathBash": "/usr/bin/bash",
+      "terminalKind": "integrated",
+      "showDebugOutput": true,
+      "trace": true,
+      "preLaunchTask": "Tracehold: Debug Preflight",
+      "presentation": {
+        "hidden": false,
+        "group": "Development",
+        "order": 2
+      },
+      "argsString": "${input:traceholdArgs}"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "hhShift",
+      "type": "pickString",
+      "description": "Halcyon operating shift",
+      "options": [
+        "nightshift",
+        "dayshift"
+      ],
+      "default": "nightshift"
+    },
+    {
+      "id": "traceholdArgs",
+      "type": "promptString",
+      "description": "Tracehold arguments; OUTPUT_DIR defaults to .debug/cases",
+      "default": "new --title debug_case --description \"Custom BashDB debug case\" --severity P3 --asset AV-DEBUG-001 --dry-run --verbose"
+    },
+    {
+      "id": "traceholdCaseId",
+      "type": "promptString",
+      "description": "Existing case ID beneath .debug/cases",
+      "default": "TH_YYYYMMDD_HHMMSS_UTC_debug_case"
+    },
+    {
+      "id": "traceholdEvidenceFile",
+      "type": "promptString",
+      "description": "Absolute or workspace-relative evidence-file path",
+      "default": "README.md"
+    },
+    {
+      "id": "traceholdEvidenceType",
+      "type": "pickString",
+      "description": "Evidence destination class",
+      "options": [
+        "raw",
+        "photo",
+        "log",
+        "note"
+      ],
+      "default": "log"
+    },
+    {
+      "id": "traceholdProfile",
+      "type": "pickString",
+      "description": "Collection profile",
+      "options": [
+        "default",
+        "general",
+        "environment"
+      ],
+      "default": "default"
+    }
+  ]
+}

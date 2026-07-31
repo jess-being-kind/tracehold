@@ -1,0 +1,5 @@
+status=ok
+run_id=20260724_213328_UTC
+timestamp=2026-07-24T21:33:54Z
+output_dir=/home/jess/Vec/Engineering/projects/active/tracehold/.debug/cases
+profile=default

@@ -1,0 +1,9 @@
+case_directory=TH_20260722_132427_UTC_tracehold_refactor_v1_1_0
+assets=N/A
+severity=P4
+site=
+files_added=
+files_type=
+profile=default
+
+    EVIDENCE_SHA256SUM:

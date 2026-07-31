@@ -1,0 +1,95 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Tracehold: Prepare Debug Sandbox",
+            "type": "shell",
+            "command": "mkdir -p .debug/cases .debug/evidence && chmod +x ./tracehold",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tracehold: Syntax Check",
+            "type": "shell",
+            "command": "/usr/bin/bash -n ./tracehold",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tracehold: Debug Preflight",
+            "dependsOrder": "sequence",
+            "dependsOn": [
+                "Tracehold: Prepare Debug Sandbox",
+                "Tracehold: Syntax Check"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Tracehold: Self-Test",
+            "type": "shell",
+            "command": "./tracehold --self-test --verbose",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tracehold: ShellCheck",
+            "type": "shell",
+            "command": "command -v shellcheck >/dev/null 2>&1 || { printf '%s\\n' 'shellcheck is not installed'; exit 127; }; shellcheck --external-sources ./tracehold",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Tracehold: Generate Bash Completion",
+            "type": "shell",
+            "command": "mkdir -p .debug && ./tracehold.sh --completion bash > .debug/tracehold-completion.bash && /usr/bin/bash -n .debug/tracehold-completion.bash",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Tracehold: List Debug Cases",
+            "type": "shell",
+            "command": "find .debug/cases -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' 2>/dev/null | sort",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Tracehold: Reset Debug Sandbox",
+            "type": "shell",
+            "command": "rm -rf .debug/cases .debug/evidence && mkdir -p .debug/cases .debug/evidence",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        }
+    ]
+}
