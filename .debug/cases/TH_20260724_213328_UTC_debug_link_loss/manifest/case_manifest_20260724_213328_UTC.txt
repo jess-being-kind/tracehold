@@ -1,9 +1,0 @@
-case_directory=TH_20260724_213328_UTC_debug_link_loss
-assets=AV-DEBUG-001
-severity=P2
-site=LAB-DEBUG
-files_added=
-files_type=
-profile=default
-
-    EVIDENCE_SHA256SUM:
