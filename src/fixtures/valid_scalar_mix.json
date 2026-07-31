@@ -1,0 +1,13 @@
+{
+  "string": "traceproof",
+  "integer": 7,
+  "float": 3.14159,
+  "boolean_true": true,
+  "boolean_false": false,
+  "null_value": null,
+  "empty_string": "",
+  "zero": 0,
+  "negative": -5,
+  "empty_list": [],
+  "empty_object": {}
+}
